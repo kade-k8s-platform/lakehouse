@@ -28,22 +28,54 @@ lines worth keeping leave the pod; what is kept is aggregated inside OpenSearch.
 
 - Dropped-line counters are dropped.
 - The candidate index keeps 3 days.
+- **Error lines are kept 30 days in their own index, and only there** (Kade, 2026-10-30).
+  404 access lines go to the candidate index, so that the aggregate can count them.
 - The aggregate lives in a separate index.
 - A transform job, not a CronJob, aggregates.
 
-ADR-014's open question, whether stdout is equivalent to the file, is not answered by
-ADR-024, ADR-036 nor the contract. Its reasons are in the archive (`enjay27/lakehouse-k8s`),
-and this repository has not cited them: **NOT KNOWN**, see Decision 2.
+Kade's limits of 2026-10-30, from the observability team's manager:
+
+- No log file and no PVC.
+- No change to the cluster's Fluent Bit.
+- No RBAC for our Fluent Bit.
+- No OpenSearch credentials for us.
+
+The cluster's Fluent Bit stores Polaris's stdout as plain text with only Kubernetes fields, so
+a new index with the JSON parsed into keywords is needed. Polaris therefore sends its logs to
+the sidecar over syslog on `localhost`: no file, no `emptyDir`, no claim. ADR-014's reasons for
+the file stay in the archive (`enjay27/lakehouse-k8s`); nothing here reads a file or stdout.
 
 **Facts this decision rests on** (the documentation of each product, read on 2026-10-30; none
 was run for this ADR, and ADR-000 rule 10 applies to every one marked NOT KNOWN):
 
 - Upstream's Polaris chart 1.6.0 has no `extraContainers` value. It renders
-  `extraInitContainers` whole as the pod's `initContainers`, and `extraVolumes` into the pod.
-  `extraVolumeMounts` go to the Polaris container only. The chart stays unchanged (ADR-009).
+  `extraInitContainers` whole as the pod's `initContainers`. It has no syslog value: its
+  `logging:` block has only `console` and `file`. `advancedConfig` accepts any Polaris or
+  Quarkus configuration property and wins over the chart's generated values, so the syslog
+  handler is set there with `quarkus.log.syslog.*` keys. The chart stays unchanged (ADR-009).
 - An init container with `restartPolicy: Always` is a native sidecar: it starts before the main
-  container and stops after it. The gate's kind node image is Kubernetes 1.36
-  (`gates/pins.json`). The target clusters' Kubernetes version is **NOT KNOWN**.
+  container and stops after it, and it shares the pod network, so `localhost:<port>` works. The
+  gate's kind node image is Kubernetes 1.36 (`gates/pins.json`). The target clusters'
+  Kubernetes version is **NOT KNOWN**.
+- Quarkus (its logging guide, current page): the `quarkus.log.syslog.*` handler has `enabled`
+  (default `false`), `endpoint` (`localhost:514`), `protocol` (`tcp`, `udp`, `ssl-tcp`),
+  `syslog-type` (`rfc5424` default), `use-counting-framing`, `truncate` (`true`), `max-length`
+  (2048 for rfc5424), `block-on-reconnect` (`false`) and `async.enabled`, `async.queue-length`
+  (512), `async.overflow` (`block` default, or `discard`). The defaults matter: a truncated
+  line is no longer valid JSON, and `block` stalls Polaris's request threads when the receiver
+  is slow.
+- Quarkus's JSON extension has a syslog section (`quarkus.log.syslog.json.*`). The guide does
+  not say that it formats what the handler sends; that, and the Quarkus version inside
+  Polaris 1.6.0, are **NOT KNOWN**.
+- Fluent Bit (its documentation; the gate's stand-in is pinned at 5.1.2): the `syslog` input has
+  `mode tcp|udp|unix_*`, `listen` and `port` (5140), TCP framing `octet_counting` (RFC 6587) or
+  `newline`, a `parser` (default `syslog-rfc5424`) and buffer settings that cap one message.
+  UDP has no framing. The octet-counting fixes arrived in 5.1.3, after the pin: **NOT KNOWN**
+  whether 5.1.2 suffices.
+- Fluent Bit's `forward` output has `host`, `port`, `tls`, `shared_key` and
+  `require_ack_response`; an `http` output exists too. Which input the main Fluent Bit exposes
+  is **NOT KNOWN** and L0b's. Fluent Bit's default buffer is memory; its `filesystem` buffer is
+  a file.
 - Fluent Bit has native `grep`, `parser`, `rewrite_tag` and `modify` filters, and a Lua filter
   whose callback may drop a record or return several. It has no timer. Lua changes need a
   restart (ADR-013's archive lesson).
@@ -55,35 +87,54 @@ was run for this ADR, and ADR-000 rule 10 applies to every one marked NOT KNOWN)
 
 ## Decision
 
-### 1. A native sidecar filters the log
+### 1. A native sidecar receives the log over syslog
 
 - **The sidecar** (placeholder name `log-sidecar`, Fluent Bit, image pinned by digest) is added
   through the chart's `extraInitContainers` with `restartPolicy: Always`. The chart is
   unchanged (ADR-009).
-  - It tails the pod's JSON log file, parses and filters it with audit policy v5, and sends
-    **only the kept lines** to the observability team's main Fluent Bit.
-  - Polaris's **stdout stays as it is** (ADR-024's rule carries over).
-- **The file moves to an `emptyDir`.** `extraVolumes` replaces the `polaris-logs` claim with an
-  `emptyDir` with a `sizeLimit`, mounted at `/deployments/logs` in Polaris and read-only in the
-  sidecar. The size is "sized from a measured hour of Polaris's output" (L1); the appender
-  settings in `advancedConfig` stay. Whether the hourly roll stays or becomes a size roll is a
-  tuning value (ADR-000 rule 11), L1's.
+  - It **listens** on `127.0.0.1` (placeholder port `5140`) with the `syslog` input in `tcp`
+    mode, `format octet_counting`, parser `syslog-rfc5424`, and parses the message body as
+    JSON into keywords.
+  - It filters with audit policy v5 and sends **only the kept lines** to an input of the
+    observability team's main Fluent Bit (Kade's destination "a").
+  - Polaris's **stdout stays as it is** (ADR-024's rule carries over;
+    `logging.console.enabled` is unchanged).
+- **Polaris's syslog handler** is set in `advancedConfig`:
+  - `quarkus.log.syslog.enabled` true, `endpoint` `localhost:5140`, `protocol` `tcp`,
+    `syslog-type` `rfc5424`, `use-counting-framing` true and the handler's JSON on
+    (`quarkus.log.syslog.json.enabled`);
+  - `max-length` large enough for the longest line, so that nothing is truncated (L1 measures;
+    no number here);
+  - `async.enabled` true, a bounded `async.queue-length` (placeholder: the default 512 until L1
+    measures) and `async.overflow` `discard`, so that the log path never blocks the catalog
+    (Kade: start with discard).
+- **There is no log file, no `emptyDir` and no PVC** for this path. Polaris's pod needs no
+  extra volume or mount for logs.
+- **The sidecar's output** is only kept lines to an input of the main Fluent Bit. Its type
+  (forward or HTTP), TLS, authentication, endpoint and `.env` variable are **NOT KNOWN** and
+  L0b's. Sending straight to OpenSearch is not an option: the Fluent Bit team does not permit
+  credentials for it.
 - **The sidecar's configuration is a ConfigMap** from a local chart that `install/release.py`
   installs in step 1 before Polaris, where ADR-045 installs the claim today. The sidecar's
   config checksum goes in `podAnnotations`, so a changed filter rolls the pods. Whether
   Fluent Bit's hot reload could avoid the roll is **NOT KNOWN** (L1).
 - **Precondition:** a target cluster's Kubernetes supports native sidecars (GA in 1.33, stated from
   memory, not checked here). The version of the target clusters is **NOT KNOWN**; the first
-  install on one checks it.
+  install on one checks it. The sidecar listens before Polaris logs, which is why it stays a
+  native sidecar.
 - **A sidecar that cannot start keeps the pod from starting.** ADR-037's "failure stops the
   install" is replaced by that: nothing for logs runs in install step 2 any more.
-- **Delivery.** The sidecar's read offset lives on the `emptyDir`: a container restart resumes,
-  a pod deleted before the sidecar sent a line loses it. This is accepted. The old path lost
-  nothing only because the claim outlived the pods.
+- **Delivery.** TCP gives ordering and a connection, not a guarantee. A line is lost when
+  (i) the queue overflows and `discard` drops it, (ii) the connection is down
+  (`block-on-reconnect` is `false`), (iii) the sidecar's buffer is lost on a restart, or (iv)
+  the main Fluent Bit is unreachable for longer than the buffer holds. The buffer is memory
+  only (a `filesystem` buffer is a file). This is accepted, and the loss is not counted
+  (the counters are dropped). Whether the handler reports an overflow is **NOT KNOWN** (L1).
 - **Idempotent document ids are required** so that a retry or a restart does not duplicate a
   line. The contract's `event_id` (the SHA-1 of the raw line) has no Lua builtin; an id
-  composed from `hostName`, `timestamp` and `sequence`, which Polaris writes, is unique per
-  pod. Which one, L1 decides. Fluent Bit's own `Generate_ID` is **NOT KNOWN** to be stable.
+  composed from `hostName`, `timestamp` and `sequence` would be unique per pod, if the syslog
+  JSON carries them (**NOT KNOWN**). Which one, L1 decides. Fluent Bit's own `Generate_ID` is
+  **NOT KNOWN** to be stable.
 
 ### 2. Policy v5 runs in the sidecar
 
@@ -94,69 +145,110 @@ was run for this ADR, and ADR-000 rule 10 applies to every one marked NOT KNOWN)
   2026-10-11 (`step16-batch-lua-parity.py`, in the archive); the port is a known quantity.
   Whether `grep` matches a parsed integer `http_status` is **NOT KNOWN** (L1).
 - **Rule 2b is stateless** (Kade, 2026-10-30): every line from `IcebergExceptionMapper` and
-  `PolarisServiceImpl` is kept, and only the 404 correction is dropped. Today the batch keeps or
-  drops those lines by the access line with the same request id that follows them, which a
-  filter that sees the application line first cannot do without state, a hold and a timer it
-  does not have. The volume of the extra lines is **NOT KNOWN**; the gate's stand-ins measure it
-  (L6).
-- **The sidecar reads the file, not stdout.** It cannot see the main container's stdout (the
-  kubelet writes it on the node; reading it needs `hostPath`, refused by Pod Security baseline),
-  and stdout is text, not JSON (`logging.console.json` is `false`). ADR-014 says stdout "was not
-  equivalent to the file for the audit report"; the reasons are **NOT KNOWN** here. L1's first
-  test measures the difference on Polaris 1.6.0.
-- **The contract moves to v3** (`docs/contracts/polaris-logs.md`): the candidate document and
-  the aggregate rows. A change to it is announced to the observability team before it ships
-  (ADR-024's rule carries over).
+  `PolarisServiceImpl` that rule 1 did not catch is kept, and only the 404 correction is
+  dropped. Today the batch keeps or drops those lines by the access line with the same request
+  id that follows them, which a filter that sees the application line first cannot do without
+  state, a hold and a timer it does not have. The volume of the extra lines is **NOT KNOWN**;
+  the gate's stand-ins measure it (L6).
+- **The sidecar reads the syslog stream, not a file or stdout.** It cannot see the main
+  container's stdout (the kubelet writes it on the node; reading it needs `hostPath`, refused
+  by Pod Security baseline), stdout is text, not JSON, and the observability team's manager
+  forbids a log file.
+- **The JSON on the syslog stream must carry the fields the policy reads** (`mdc.requestId`,
+  `hostName`, `sequence`, `loggerName`, `level`, `message`). If the handler's JSON differs from
+  the file appender's (field names, MDC, exception output), contract v3 states the difference.
+- **The contract moves to v3** (`docs/contracts/polaris-logs.md`): the candidate and error
+  documents and the aggregate rows. A change to it is announced to the observability team
+  before it ships (ADR-024's rule carries over).
 
-### 3. The candidate index, 3 days
+### 3. Routing: candidate, error, aggregate
 
-- **A new index** (placeholder `polaris-logs-candidate`, one per day so ISM can delete by age)
-  receives the kept lines from the main Fluent Bit.
-- **ISM deletes it after 3 days** (`min_index_age: 3d`). A line lives 3 to 4 days. Which ISM
-  version the observability team runs is **NOT KNOWN**.
+Rules are those of the contract's policy v5, first match wins; the redaction runs before every
+rule. Each rule names the index it feeds.
 
-### 4. An OpenSearch transform aggregates; no CronJob
+| Rule | Line | Index |
+|---|---|---|
+| 1 | level ERROR or WARN | error (30 days) |
+| 2a | commit timing (`LocalIcebergCatalog`) | dropped (as today) |
+| 2b | `IcebergExceptionMapper` / `PolarisServiceImpl` line not caught by rule 1 (stateless, kept; only the 404 correction dropped) | candidate (3 days). Placeholder choice: Kade named no index; these are application lines of a failed request, so L6 measures their volume and level and may move them to error |
+| 2c | other application logger | dropped (no count, Kade) |
+| 3' | access line, status 404 | candidate (3 days); was dropped and counted |
+| 3 | access line, status 400 or above except 404 (401, 403, other 4xx, 5xx), or one that does not parse | error (30 days) |
+| 4 | PUT, DELETE or PATCH access line | candidate (3 days) |
+| 5 | POST under `/api/management/` | candidate (3 days) |
+| - | any other POST | dropped |
+| 6 | successful GET or HEAD | dropped |
+| 7 | anything else | error (30 days). Placeholder choice: an unexpected line is worth keeping longer; L1 may change it |
+
+- **Three indices** (placeholder names): the candidate index `polaris-logs-candidate`, the
+  **error index** `polaris-logs-error` and the aggregate `polaris-logs-aggregate`, each daily
+  where ISM deletes it by age.
+- **Error lines are not duplicated into the candidate index** (Kade): the error index alone
+  holds them. 404 lines are not errors for this purpose: they are counted, not read.
+- **Mechanism, NOT KNOWN and L0b's:** either the sidecar tags each kept record (`rewrite_tag` or
+  a Lua-set key such as an `index_class` field) and the main Fluent Bit routes by it, or the
+  sidecar sends two streams (two outputs, tags or ports). This ADR states the requirement, two
+  routes, and leaves the mechanism to what the main Fluent Bit's input allows.
+
+### 4. The candidate index, 3 days, and the error index, 30 days
+
+- **The candidate index** receives its lines from the main Fluent Bit. **ISM deletes it after
+  3 days** (`min_index_age: 3d`). A line lives 3 to 4 days.
+- **The error index** keeps its lines for **30 days** under a second ISM policy
+  (`min_index_age: 30d` on a daily index, so a line lives 30 to 31 days). ISM deletes by index
+  age, not by document, so one index cannot hold both lifetimes.
+- **Both policies, and both index templates, are the observability team's** (ADR-024's
+  ownership rule; L0b). Which ISM version they run is **NOT KNOWN**.
+- **The error index's volume** is **NOT KNOWN**: L6 measures it on the gate's stand-ins, 404s
+  excluded.
+
+### 5. An OpenSearch transform aggregates; no CronJob
 
 - **A built-in transform job** (or an ingestion pipeline; the one that passes L2/L3's gate)
-  reads the candidate index and writes a **separate aggregate index** (placeholder
-  `polaris-logs-aggregate`) with normal retention. Nothing in this repository runs on a
-  schedule for logs.
+  reads **both** the candidate and the error index and writes the **separate aggregate index**
+  with normal retention. Nothing in this repository runs on a schedule for logs.
 - **Conditions, to be proved on the gate's OpenSearch stand-in** (`opensearchproject/opensearch`
-  3.6.0, ADR-031) by L2/L3, each **NOT KNOWN** today:
+  3.6.0, ADR-031) by L1/L3, each **NOT KNOWN** today:
   - the shortest schedule interval a continuous job accepts;
-  - whether the source accepts a wildcard or an alias over the daily indices (if not, an
-    alias or the rollover alias);
+  - whether the source accepts an alias or an index pattern covering the daily indices of both
+    kinds (if not, a separate job per kind, or an alias);
   - the `_id` a bucket document gets, so that a re-run updates and does not duplicate.
 - **Groups and aggregations are fixed at creation:** a change is a new job and a new target
   index.
 
-### 5. What the aggregate keeps and loses
+### 6. What the aggregate keeps and loses
 
 The counters of dropped lines are dropped (Kade, 2026-10-30), so only kept lines reach
-OpenSearch.
+OpenSearch. 404 lines are in the candidate index, so a 404 count per hour and resource is
+possible again.
 
 | Row | Possible from kept lines | Lost |
 |---|---|---|
-| summary (per hour, by `hostName`, `level`, `http_status`) | `by_pod`, `errors_kept`, `errors_4xx`, `errors_5xx` (no 404s), `auth_denied`, `held_orphans`, `bytes_total` of kept lines, `min_record_time`, `max_record_time`, `policy` | `lines_in`, `dropped`, `access_seen`, `access_kept`, `access_counted`, `counted_read/post/404`, `app_dropped_total/404`, the batch's `malformed`, `sources`, `corrupt_files`, `orphans_moved`, `idle_log_files`, `pod_list_error`, the books-balance check, `distinct_resources`, `distinct_principals` |
+| summary (per hour, by `hostName`, `level`, `http_status`) | `by_pod`, `errors_kept`, `errors_4xx` (4xx except 404), a count of 404s on its own, `errors_5xx`, `auth_denied`, `held_orphans`, `bytes_total` of kept lines, `min_record_time`, `max_record_time`, `policy` | `lines_in`, `dropped`, `access_seen`, `access_kept`, `counted_read/post`, `app_dropped_total/404`, the batch's `malformed`, `sources`, `corrupt_files`, `orphans_moved`, `idle_log_files`, `pod_list_error`, the books-balance check, `distinct_resources`, `distinct_principals` |
 | resource (hour, `resource`) | `requests`, `writes`, `errors*`, `auth_denied`, `response_bytes` from kept lines | `commit_count`, `commit_ms_*`, the 500-row cap with `__other__`/`__errors__`; `reads` and `last_read_bytes` cover failed reads only |
 | principal (hour, `user_principal_name`) | as resource, without `last_*` | the 200-row cap |
 | app_dropped | none | all of it; "a logger that appears here for the first time is worth a look" is lost |
 
-A transform has no top-N, so the caps go and cardinality falls on the aggregate index.
+A transform has no top-N, so the caps go and cardinality falls on the aggregate index. The
+error index keeps the lines 30 days for reading; the aggregate keeps the counts after that.
 
-### 6. Ownership and what goes when
+### 7. Ownership and what goes when
 
-- **Index template, ISM policy and transform job stay with the observability team** (ADR-024)
-  **unless L0b, the agreement with that team on the interface, settles otherwise.** The
-  protocol the main Fluent Bit accepts and the endpoint's variable in `.env` are **NOT KNOWN**
-  and are L0b's. The gate's OpenSearch stand-in carries a stand-in copy of the template, the
-  ISM policy and the transform (ADR-031), and a main Fluent Bit stand-in receives the sidecar's
-  output; both are later work.
+- **Two index templates, two ISM policies (3 days, 30 days) and the transform stay with the
+  observability team** (ADR-024) **unless L0b, the agreement with that team on the interface,
+  settles otherwise**, as does the second route on the main Fluent Bit's input. The protocol it
+  accepts and the endpoint's variable in `.env` are **NOT KNOWN** and are L0b's. The gate's
+  OpenSearch stand-in carries stand-in copies of the templates, the policies and the transform
+  (ADR-031), and a main Fluent Bit stand-in receives the sidecar's output; both are later work.
 - **The old path is removed later, by L7, not by this ADR.** The batch, its chart and image, the
   `polaris-logs` claim, the file's `ReadWriteMany` mount, the `shared` storage class,
-  `check-logs` and the fixture gate stay in force and green until then. When L7 removes them,
-  `POLARIS_LOGS_STORAGE_CLASS` and `POLARIS_LOGS_SIZE` go, and the `ReadWriteMany` requirement
-  of ADR-036's Consequences, and with it the open question about target storage for logs.
+  `check-logs` and the fixture gate stay in force and green until then. So until L7 Polaris has
+  both appenders, the file appender and the syslog handler, and the sidecar does not read the
+  file. When L7 removes the old path, `POLARIS_LOGS_STORAGE_CLASS` and `POLARIS_LOGS_SIZE` go,
+  and the `ReadWriteMany` requirement of ADR-036's Consequences, and with it the open question
+  about target storage for logs.
+- **The network policy** from Polaris's pod to the main Fluent Bit's port is L5's, not written
+  here.
 - **Supersedes ADR-024 and ADR-036.** ADR-036 is already amended by ADR-037, so ADR-000 rule 6
   has it superseded whole. **Amends ADR-037:** its install-order line for the batch (step 2,
   failure stops the install) lapses, and its other text, the batch before the console, is moot.
@@ -165,8 +257,9 @@ A transform has no top-N, so the caps go and cardinality falls on the aggregate 
   it changes none of them, and their parts about the batch, the claim, the file hand-off and the
   fixture gate lapse when L7 removes those. Whether a small ADR then supersedes or amends them
   is Kade's.
-- **Placeholders** (ADR-000 rule 11: tuning values are not ADRs): `log-sidecar`,
-  `polaris-logs-candidate`, `polaris-logs-aggregate`. L0b agrees the real names.
+- **Placeholders** (ADR-000 rule 11: tuning values are not ADRs): `log-sidecar`, port `5140`,
+  the queue length, `polaris-logs-candidate`, `polaris-logs-error`, `polaris-logs-aggregate`.
+  L0b agrees the real names.
 
 ## Diagram
 
