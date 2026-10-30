@@ -236,3 +236,257 @@ def load_command(env, image, context, name, spec):
         "--restart=Never", "--rm", "-i", "--quiet", "--pod-running-timeout=3m",
         "--override-type=strategic", "--overrides", json.dumps(overrides),
         "--command", "--", "python3", "-", json.dumps(spec)]
+
+
+# The checks. Each returns (problems, observations), both lists of text; the gate prints the
+# observations of a leg before it judges them.
+
+STALL_MAX_MS = 5000
+STALL_FACTOR = 3
+STALL_MORE_MS = 250
+
+
+def percentile(values, p):
+    """The nearest-rank percentile."""
+    ordered = sorted(values)
+    return ordered[max(math.ceil(p / 100 * len(ordered)), 1) - 1]
+
+
+def latency_summary(ms):
+    return {"n": len(ms), "p50": percentile(ms, 50), "p99": percentile(ms, 99), "max": max(ms)}
+
+
+def json_lines(log):
+    """The JSON objects among the lines of a container's log; Fluent Bit's own log lines are
+    skipped."""
+    found = []
+    for line in log.splitlines():
+        if line.startswith("{"):
+            try:
+                value = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(value, dict):
+                found.append(value)
+    return found
+
+
+def _logger(record):
+    return (record.get("fields") or {}).get("loggerName")
+
+
+def _fields(record):
+    return record.get("fields") or {}
+
+
+def check_started(records, polaris_log):
+    """Proof 1: the handler starts with the keys."""
+    if not records:
+        return (["the handler did not start with the keys (or the names are wrong): no frame "
+                 "reached the receiver"], [])
+    first, problems = records[0], []
+    notes = [f"first frame: pri {first.get('pri')}, version {first.get('version')}, host "
+             f"{first.get('host')}, app {first.get('app')}, procid {first.get('procid')}, "
+             f"declared {first.get('declared')}, msg_len {first.get('msg_len')}",
+             f"first frame head: {first.get('head')}", f"first frame tail: {first.get('tail')}"]
+    if first.get("version") != 1:
+        problems.append(f"the first frame's RFC 5424 version is {first.get('version')!r}, not 1")
+    if not isinstance(first.get("pri"), int):
+        problems.append(f"the first frame's PRI is {first.get('pri')!r}")
+    if not first.get("json_ok"):
+        problems.append("the first frame's message is not a JSON object")
+    for line in polaris_log.splitlines():
+        if "syslog" in line.lower() and ("ERROR" in line or "Exception" in line):
+            problems.append(f"Polaris's log has an error about syslog: {line[:200]}")
+    return problems, notes
+
+
+def _logger_ok(record):
+    return _logger(record) in (None, ACCESS_LOGGER)
+
+
+def check_framing(records, sent):
+    """Proof 2 on the plain receiver: every frame framed, every request's access line in
+    exactly one frame, every such body one JSON object."""
+    problems = []
+    for r in records:
+        if not r.get("framing_ok"):
+            problems.append(f"frame {r.get('n')} is not framed: {r.get('error', 'no reason')}")
+    sent_set = set(sent)
+    for request_id in sent:
+        lines = [r for r in records if r.get("request_id") == request_id and _logger_ok(r)]
+        if len(lines) != 1:
+            problems.append(f"{request_id} is in {len(lines)} frames, not 1")
+        problems += [f"{request_id}: the body of frame {r['n']} is not one JSON object"
+                     for r in lines if not r.get("json_ok")]
+    other = [r for r in records if r.get("request_id") not in sent_set and not r.get("json_ok")]
+    notes = [f"{len(records)} frames, {len(sent)} requests sent, "
+             f"{sum(1 for r in records if r.get('request_id') in sent_set)} frames carry one",
+             f"{len(other)} frame(s) outside the requests are not a JSON object"
+             + "".join(f"; frame {r['n']} declared {r.get('declared')}: {r.get('head', '')[:80]}"
+                       for r in other[:2])]
+    return problems, notes
+
+
+def classify_long(records, prefix, length, max_length, whole=False):
+    """Proof 3: what became of the request whose ID has `length` characters (`prefix` starts
+    it) at max-length `max_length`. `whole` makes anything but an intact line a problem."""
+    frames = [r for r in records if (r.get("request_id") or "").startswith(prefix)]
+    problems = [f"frame {r.get('n')} of the {length}-character line is not framed"
+                for r in frames if not r.get("framing_ok")]
+    if not frames:
+        label = "dropped"
+        problems.append(f"the {length}-character line was dropped: no frame at max-length "
+                        f"{max_length}")
+    elif len(frames) > 1:
+        label = f"split in {len(frames)} frames"
+    elif not frames[0].get("json_ok"):
+        label = "cut, JSON invalid"
+    else:
+        mdc = _fields(frames[0]).get("mdc")
+        got = mdc.get("requestId") if isinstance(mdc, dict) else None
+        label = "not cut" if isinstance(got, str) and len(got) >= length else "cut, JSON valid"
+    if whole and frames and label != "not cut":
+        problems.append(f"the {length}-character line did not arrive whole at max-length "
+                        f"{max_length}: {label}")
+    notes = [f"{length}-character request id at max-length {max_length}: {label}"]
+    for r in frames[:3]:
+        counts = r.get("declared", 0) > r.get("msg_len", 0)
+        notes.append(f"  frame {r.get('n')}: declared {r.get('declared')}, msg_len "
+                     f"{r.get('msg_len')}, declared counts the envelope: "
+                     f"{'yes' if counts else 'no'}; head {r.get('head', '')[:100]!r}; "
+                     f"tail {r.get('tail', '')[-80:]!r}")
+    return problems, notes
+
+
+def check_stall(baseline, rounds):
+    """Proof 4: over the stalled rounds every request answered 401 (none timed out, none took
+    5000 ms), p99 stayed within the bound, and the queue did overflow (a stall that lost
+    nothing proves nothing). `baseline` and each round hold p50, p99 and max in ms; a round
+    also its `sent`, the `missing` IDs at the receiver, status `counts` and `timeouts`."""
+    bound = max(STALL_FACTOR * baseline["p99"], baseline["p99"] + STALL_MORE_MS)
+    problems, notes = [], [f"baseline: p50 {baseline['p50']} ms, p99 {baseline['p99']} ms, "
+                           f"max {baseline['max']} ms; the stalled p99 may be {bound} ms"]
+    for i, r in enumerate(rounds, 1):
+        notes.append(f"stalled round {i}: {r['sent']} requests, {r['missing']} lines lost, "
+                     f"p50 {r['p50']} ms, p99 {r['p99']} ms, max {r['max']} ms, counts "
+                     f"{r['counts']}, timeouts {r['timeouts']}")
+        for status, count in sorted(r["counts"].items()):
+            if status != "401":
+                problems.append(f"stalled round {i}: {count} request(s) answered {status}, "
+                                "not 401")
+        if r["timeouts"]:
+            problems.append(f"stalled round {i}: {r['timeouts']} request(s) timed out")
+        if r["max"] >= STALL_MAX_MS:
+            problems.append(f"stalled round {i}: the slowest request took {r['max']} ms, "
+                            f"not under {STALL_MAX_MS} ms")
+        if r["p99"] > bound:
+            problems.append(f"stalled round {i}: p99 {r['p99']} ms is over the bound "
+                            f"{bound} ms (baseline p99 {baseline['p99']} ms)")
+    if not any(r["missing"] for r in rounds):
+        problems.append(f"NOT SATURATED: {len(rounds)} stalled round(s) lost no line, so the "
+                        "queue never overflowed and the stall proves nothing")
+    return problems, notes
+
+
+def _sample(record, name):
+    return (record.get("sample") or {}).get(name)
+
+
+def check_fields(records, sent, pod):
+    """Proof 5 on the plain receiver: hostName is the pod, sequence an integer rising in
+    arrival order, (hostName, sequence) unique, mdc the request's, loggerName a string."""
+    problems, sent_set = [], set(sent)
+    lines = [r for r in records if r.get("request_id") in sent_set and r.get("json_ok")]
+    json_records = [r for r in records if r.get("json_ok")]
+    last = None
+    for r in lines:
+        f, rid = _fields(r), r["request_id"]
+        if f.get("hostName") != pod:
+            problems.append(f"{rid}: hostName is {f.get('hostName')!r}, not the pod {pod!r}")
+        if r.get("host") != f.get("hostName"):
+            problems.append(f"{rid}: the envelope host {r.get('host')!r} differs from hostName "
+                            f"{f.get('hostName')!r}")
+        seq = f.get("sequence")
+        if not isinstance(seq, int) or isinstance(seq, bool):
+            problems.append(f"{rid}: sequence is {seq!r}, not an integer")
+        elif last is not None and seq <= last:
+            problems.append(f"{rid}: sequence {seq} does not rise after {last}")
+        else:
+            last = seq
+        mdc = f.get("mdc")
+        if not isinstance(mdc, dict) or mdc.get("requestId") != rid:
+            problems.append(f"{rid}: mdc is {mdc!r}, its requestId should be the id sent")
+        if not isinstance(f.get("loggerName"), str):
+            problems.append(f"{rid}: loggerName is {f.get('loggerName')!r}, not a string")
+    pairs = [(_fields(r).get("hostName"), _fields(r).get("sequence")) for r in json_records]
+    pairs = [p for p in pairs if p[1] is not None]
+    repeated = len(pairs) - len(set(pairs))
+    if repeated:
+        problems.append(f"(hostName, sequence) repeats {repeated} time(s) in {len(pairs)} lines")
+    keys = {}
+    for r in json_records:
+        for name, kind in (r.get("keys") or {}).items():
+            entry = keys.setdefault(name, [set(), None])
+            entry[0].add(kind)
+            entry[1] = entry[1] or _sample(r, name)
+    notes = ["json keys: " + (", ".join(
+        f"{name}: {'|'.join(sorted(kinds))}" + (f" (e.g. {sample})" if sample else "")
+        for name, (kinds, sample) in sorted(keys.items())) or "none")]
+    first = lines[0] if lines else (json_records[0] if json_records else {})
+    notes.append(f"timestamp form: {_fields(first).get('timestamp')!r}")
+    outside = [r for r in json_records if not r.get("request_id")]
+    if outside:
+        form = _fields(outside[0]).get("mdc", "absent")
+        notes.append(f"mdc outside a request: {form!r} (first of {len(outside)} lines)")
+    else:
+        notes.append("mdc outside a request: no line seen")
+    notes.append(f"loggerName of the request lines: {sorted({_logger(r) for r in lines}, key=str)}")
+    notes.append(f"envelope: app {first.get('app')!r}, procid {first.get('procid')!r}, host "
+                 f"{first.get('host')!r}")
+    if len(pairs) == len(json_records) and not repeated and pairs:
+        notes.append("event_id <hostName>:<timestamp>:<sequence> is viable: sequence is on "
+                     f"all {len(pairs)} lines and (hostName, sequence) is unique")
+    else:
+        notes.append("event_id <hostName>:<timestamp>:<sequence> is not viable: "
+                     f"{len(json_records) - len(pairs)} line(s) lack sequence, {repeated} "
+                     "repeat(s)")
+        if len(pairs) < len(json_records):
+            problems.append(f"sequence is missing from {len(json_records) - len(pairs)} "
+                            "line(s)")
+    return problems, notes
+
+
+def _body(record):
+    """(key, parsed body) of a Fluent Bit syslog record, whichever key holds the JSON text."""
+    keys = [k for k in ("message", "log", "msg") if k in record] + [
+        k for k, v in record.items() if isinstance(v, str) and v.startswith("{")]
+    for key in keys:
+        try:
+            body = json.loads(record[key])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(body, dict):
+            return key, body
+    return (keys[0] if keys else None), None
+
+
+def check_fluent_bit(records, sent):
+    """Proof 2 on leg B: every request's line once in Fluent Bit's output with a JSON body."""
+    problems, found, body_keys = [], {}, set()
+    for r in records:
+        key, body = _body(r)
+        if body is None:
+            problems.append(f"a record's body is not a JSON object: {json.dumps(r)[:200]}")
+            continue
+        body_keys.add(key)
+        mdc = body.get("mdc")
+        if isinstance(mdc, dict) and isinstance(mdc.get("requestId"), str):
+            found.setdefault(mdc["requestId"], []).append(r)
+    for request_id in sent:
+        count = len(found.get(request_id, []))
+        if count != 1:
+            problems.append(f"{request_id} is in {count} of Fluent Bit's records, not 1")
+    notes = [f"Fluent Bit wrote {len(records)} records; the body is in {sorted(body_keys)}",
+             "record keys: " + ", ".join(sorted(records[0])) if records else "no record"]
+    return problems, notes
