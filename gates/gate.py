@@ -32,8 +32,7 @@
                   the log stand-ins (ADR-081): OpenSearch 3.6.0 (`logs-opensearch`) and a main
                   Fluent Bit (`main-fluent-bit-standin`, forward on 24224).
                   `standins --direct` leaves the log stand-ins out; SeaweedFS and OPA also take
-                  connections from Polaris's namespace; SeaweedFS and OPA also take connections from Polaris's
-                  namespace and run under the CPU limits in gates/stress/config.json, or in
+                  connections from Polaris's namespace and run under the CPU limits in gates/stress/config.json, or in
                   the overlay STRESS_OVERLAY names (Tier D's capacity.json, ADR-053 §7).
   check-standins  runs gates/check_standins.sh in a short-lived curl pod in Polaris's namespace:
                   an S3 round trip with Polaris's credentials, and every case of
