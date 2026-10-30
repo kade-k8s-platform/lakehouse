@@ -1,6 +1,6 @@
 {
   "policy": {
-    "description": "Contract v3: the candidate index is deleted 3d after its creation.",
+    "description": "Contract v3: the candidate index is deleted once it is 3d old; a daily index, so a line lives that long plus up to a day.",
     "default_state": "hot",
     "states": [
       {

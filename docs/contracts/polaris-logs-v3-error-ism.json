@@ -1,6 +1,6 @@
 {
   "policy": {
-    "description": "Contract v3: the error index is deleted 30d after its creation.",
+    "description": "Contract v3: the error index is deleted once it is 30d old; a daily index, so a line lives that long plus up to a day.",
     "default_state": "hot",
     "states": [
       {

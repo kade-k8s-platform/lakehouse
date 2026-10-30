@@ -42,12 +42,29 @@ def v3(name):
         return json.load(f)
 
 
-def route(line):
-    """(rule, route) of a Polaris line: the redaction, then the rules of policy-v5, first match."""
+def redact(line):
+    """The line with a clientSecret that is not Polaris's own mask redacted (port of redact_secret)."""
     rec = copy.deepcopy(line)
     msg = rec.get("message")
+    hit = False
+
+    def sub(m):
+        nonlocal hit
+        if m.group(2) in ("*", "<redacted>"):
+            return m.group(0)
+        hit = True
+        return m.group(1) + "<redacted>"
+
     if isinstance(msg, str):
-        rec["message"] = SECRET_RE.sub(lambda m: m.group(1) + "<redacted>", msg)
+        rec["message"] = SECRET_RE.sub(sub, msg)
+    if hit:
+        rec["secret_redacted"] = True
+    return rec
+
+
+def route(line):
+    """(rule, route) of a Polaris line: the redaction, then the rules of policy-v5, first match."""
+    rec = redact(line)
     if rec.get("level") in ("ERROR", "WARN"):
         return "1", "error"
     logger = rec.get("loggerName")
@@ -111,11 +128,19 @@ class Router(unittest.TestCase):
         by_name = {e["name"]: e for e in v3("routing.json")["examples"]}
         self.assertEqual(route(by_name["PUT 409"]["input"]), ("3", "error"))
 
-    def test_redaction_runs_before_the_rules(self):
-        line = {"level": "ERROR", "loggerName": "x", "message": "clientSecret: abc123"}
-        self.assertEqual(route(line), ("1", "error"))
-        line = {"level": "INFO", "loggerName": ACCESS_LOGGER, "message": "clientSecret: abc"}
-        self.assertEqual(route(line), ("3", "error"))  # no access line parses: rule 3
+    def test_redaction_keeps_polaris_own_mask_and_redacts_the_rest(self):
+        line = {"message": "a clientSecret: abc123 b clientSecret: * c clientSecret: <redacted>"}
+        out = redact(line)
+        self.assertEqual(out["message"], "a clientSecret: <redacted> b clientSecret: * "
+                                         "c clientSecret: <redacted>")
+        self.assertIs(out["secret_redacted"], True)
+        self.assertNotIn("secret_redacted", redact({"message": "clientSecret: *"}))
+
+    def test_a_kept_example_carries_the_redacted_message(self):
+        [ex] = [e for e in v3("routing.json")["examples"] if e["name"] == "ERROR with clientSecret"]
+        self.assertNotIn("abc123", json.dumps(ex["output"]))
+        self.assertEqual(ex["output"]["message"], redact(ex["input"])["message"])
+        self.assertIs(ex["output"]["secret_redacted"], True)
 
 
 class Shapes(unittest.TestCase):
@@ -255,6 +280,27 @@ class Indices(unittest.TestCase):
                 self.assertIs(mappings["dynamic"], False)
                 self.assertEqual(set(schema["properties"]) - set(mappings["properties"]), set())
                 self.assertEqual(mappings["_meta"]["contract_version"], 3)
+
+    def test_mapping_types_follow_the_schema_types(self):
+        for kind in ("candidate", "error", "aggregate"):
+            schema = v3("aggregate.schema.json" if kind == "aggregate"
+                        else f"{kind}-line.schema.json")
+            props = v3(f"{kind}-template.json")["template"]["mappings"]["properties"]
+            for name, spec in schema["properties"].items():
+                got = props[name]["type"]
+                if name in ("timestamp", "window_start", "min_record_time", "max_record_time"):
+                    want = "date"
+                elif spec.get("type") == "integer":
+                    want = "long"
+                elif spec.get("const") is True:
+                    want = "boolean"
+                elif spec.get("type") == "object":
+                    want = "object"
+                elif name == "message":
+                    want = "text"
+                else:
+                    want = "keyword"
+                self.assertEqual(got, want, f"{kind}.{name}")
 
     def test_line_templates_carry_the_alias(self):
         for kind in ("candidate", "error"):

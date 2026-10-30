@@ -27,8 +27,8 @@ The machine-readable form is ten files next to this one, all named `polaris-logs
 
 | Index | Holds | Kept |
 |---|---|---|
-| `polaris-logs-candidate-*` (daily) | Lines routed to `candidate` | 3 days: ISM deletes it at `min_index_age: 3d` |
-| `polaris-logs-error-*` (daily) | Lines routed to `error` | 30 days: ISM deletes it at `min_index_age: 30d` |
+| `polaris-logs-candidate-*` (daily) | Lines routed to `candidate` | 3 to 4 days: ISM deletes the index at `min_index_age: 3d`, and the index is daily |
+| `polaris-logs-error-*` (daily) | Lines routed to `error` | 30 to 31 days: ISM deletes the index at `min_index_age: 30d`, and the index is daily |
 | `polaris-logs-aggregate` | One document per group and hour | The observability team's normal retention; no ISM policy here |
 
 An error line is in the error index only, never also in the candidate index. Both line
@@ -36,7 +36,7 @@ templates carry the alias `polaris-logs-source`, which is the transform's source
 `polaris-logs-*` would match the aggregate index and feed it back. The templates set
 `dynamic: false` and map every property of their schema; `message` is `text` with a keyword
 subfield, `exception` is an object that is not indexed. Shards and replicas (1 and 1) are
-placeholders. That OpenSearch 3.6.0 accepts the templates, the policies and the transform is
+placeholders. Only `mdc.requestId` and `mdc.realmId` are indexed; any other `mdc` key is kept in the document and not searchable. Install order: the templates and the ISM policies before the first document, the aggregate template before the transform starts, or the target gets dynamic mappings. That OpenSearch 3.6.0 accepts the templates, the policies and the transform is
 not yet verified.
 
 ## Which lines go where: policy-v5
@@ -80,7 +80,7 @@ syslog envelope (application name, host, process id) once the body is parsed.
 | `client_ip`, `http_method`, `api_path`, `http_status`, `response_size`, `access_log_parse_error` | | access lines | As in v2, parsed by the sidecar |
 | `user_principal_name` | string | both, required | The caller on an access line (`-` for none); `-` on any other line |
 | `secret_redacted` | `true` | both | As in v2 |
-| `event_id` | string, no whitespace | both, required | The document id, so a resend overwrites. Placeholder composition: `<hostName>:<timestamp>:<sequence>`, unique per pod incarnation (the SHA-1 of v2 has no Lua builtin) |
+| `event_id` | string, no whitespace | both, required | The document id, so a resend overwrites. Placeholder composition: `<hostName>:<timestamp>:<sequence>`, unique per pod incarnation (the SHA-1 of v2 has no Lua builtin). It is unique only while `sequence` is present: a record without one (the syslog route is not measured) can collide, and the later overwrites the earlier |
 | `index_class` | `candidate` or `error` | both, required | The index the record belongs to (the candidate schema accepts only the first, the error schema only the second) |
 | `policy_rule` | string | both, required | The rule id above: `2b`, `3'`, `4`, `5` in the candidate index; `1`, `3`, `7` in the error index |
 | `policy` | `policy-v5` | both, required | |
@@ -119,7 +119,7 @@ same target), never write the same bucket. The metrics:
 | `response_bytes` | The sum of `response_size` |
 | `min_record_time`, `max_record_time` | The first and the last `timestamp` |
 
-A document has no other field. A non-access line carries `-` or `none` in the access group
+A document has no other field. There is no cap on rows (v2's `__other__` is gone): the aggregate holds one document per distinct combination of the nine groups, so many principals, resources or pods make it grow towards one document per line. A non-access line carries `-` or `none` in the access group
 fields so that no group lacks one (whether the transform would skip such a document is not
 known). The shortest interval of the transform (placeholder: 1 minute), the bucket `_id` and the
 format of the time fields (string or epoch milliseconds) are not known either.
