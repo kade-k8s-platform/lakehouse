@@ -284,6 +284,12 @@ class Checks(unittest.TestCase):
         self.assertNotEqual(problems, [])
         self.assertNotEqual(label(self.long(framing=False))[0], [])
 
+    def test_a_line_that_never_arrived_is_only_observed_when_not_required(self):
+        problems, notes = probe.classify_long([], "syslog-1-a-long-3000-", 3000, 16384,
+                                              required=False)
+        self.assertEqual(problems, [])
+        self.assertIn("dropped", notes[0])
+
     def test_whole_long_line_is_required_when_asked(self):
         got = probe.classify_long(self.long(json_ok=False), "syslog-1-a-long-3000-", 3000,
                                   16384, whole=True)
@@ -397,6 +403,141 @@ class Run(unittest.TestCase):
                      "syslog-probe-fb"):
             self.assertIn(name, names)
         self.assertTrue(any("boom" in p for p in problems))
+
+
+class Settle(unittest.TestCase):
+    def test_returns_once_the_count_has_been_quiet(self):
+        now = [0.0]
+        counts = iter([1, 5, 9, 9, 9, 9, 9, 9, 9, 9])
+        got = probe.settle(lambda: next(counts), quiet=6, timeout=90, poll=2,
+                           sleep=lambda s: now.__setitem__(0, now[0] + s), clock=lambda: now[0])
+        self.assertEqual(got, 9)
+        self.assertLess(now[0], 30)
+
+    def test_gives_up_at_the_timeout(self):
+        now = [0.0]
+        n = [0]
+
+        def count():
+            n[0] += 1
+            return n[0]
+
+        probe.settle(count, quiet=6, timeout=10, poll=2,
+                     sleep=lambda s: now.__setitem__(0, now[0] + s), clock=lambda: now[0])
+        self.assertLessEqual(now[0], 12)
+
+
+class Cluster:
+    """A fake cluster for the driver: kubectl's answers and the receiver's file, made from the
+    load each leg sends."""
+
+    def __init__(self, lose_in_stall=True, cut_long=True):
+        self.calls, self.sent, self.stalled, self.lose = [], [], False, lose_in_stall
+        self.cut_long = cut_long
+        self.seq = 0
+
+    def runner(self, argv, stdin=None):
+        self.calls.append(argv)
+        if "exec" in argv and "touch" in argv:
+            self.stalled = True
+        if "exec" in argv and "rm" in argv:
+            self.stalled = False
+
+    def output(self, argv, stdin=None):
+        self.calls.append(argv)
+        text = " ".join(argv)
+        if "deployment/polaris" in text and " get " in text:
+            return json.dumps(source())
+        if " get pods " in text:
+            name = POD if "probe-a" in text else POD.replace("-a-", "-b-")
+            return json.dumps({"items": [{"metadata": {"name": name},
+                                          "status": {"phase": "Running", "podIP": "10.0.0.9"}}]})
+        if argv[3:5] == ["-n", "polaris-ns"] and "run" in argv:
+            return self.load(json.loads(argv[-1]))
+        if "wc" in argv:
+            return f"{len(self.lines())} /tmp/syslog-received.jsonl\n"
+        if "cat" in argv:
+            return "\n".join(json.dumps(r) for r in self.lines())
+        if "logs" in argv and "fluent-bit" in argv:
+            return self.fluent_bit()
+        return ""
+
+    def load(self, spec):
+        import syslog_load
+        out = []
+        for ph in spec["phases"]:
+            ids = ([syslog_load.long_id(spec["pid"], spec["leg"], n) for n in ph["lengths"]]
+                   if "lengths" in ph else
+                   [syslog_load.request_id(spec["pid"], spec["leg"], ph["phase"], i)
+                    for i in range(ph["count"])])
+            self.sent += [(i, ph["phase"], self.stalled) for i in ids]
+            out.append(json.dumps({"phase": ph["phase"], "sent": len(ids),
+                                   "counts": {"401": len(ids)}, "timeouts": 0, "errors": 0,
+                                   "ms": [5.0] * len(ids)}))
+        return "\n".join(out) + "\n"
+
+    def lines(self):
+        records, seq = [], 100
+        lost = 0
+        for i, (rid, phase, stalled) in enumerate(self.sent, 1):
+            if stalled and self.lose and i % 10 == 0:
+                continue
+            seq += 1
+            if "-long-" in rid:
+                if not self.cut_long:
+                    pass
+                records.append({"n": len(records) + 1, "framing_ok": True, "json_ok": False,
+                                "request_id": rid[:1500], "declared": 2100, "msg_len": 2048,
+                                "head": "h", "tail": "t"})
+                continue
+            f = {"hostName": POD, "sequence": seq, "loggerName": ACCESS, "mdc": {"requestId": rid},
+                 "timestamp": "t"}
+            records.append({"n": len(records) + 1, "framing_ok": True, "json_ok": True,
+                            "pri": 14, "version": 1, "host": POD, "app": "polaris",
+                            "procid": "1", "request_id": rid, "declared": 300, "actual": 300,
+                            "msg_len": 250, "head": "{", "tail": "}", "fields": f,
+                            "keys": {"sequence": "int"}})
+        return records
+
+    def fluent_bit(self):
+        out = ["[2026/10/30] [ info] [input:syslog:syslog.0] listening on 127.0.0.1:5140"]
+        for rid, phase, _ in self.sent:
+            body = json.dumps({"mdc": {"requestId": rid}, "pad": "y"})
+            if rid.startswith(("syslog-%d-b-long-19000" % os.getpid())):
+                body = body[:80]
+            out.append(json.dumps({"date": 1.0, "message": body}))
+        return "\n".join(out)
+
+
+class Driver(unittest.TestCase):
+    def go(self, **kwargs):
+        cluster = Cluster(**kwargs)
+        with mock.patch.object(probe, "SETTLE_QUIET", 0), mock.patch.object(
+                probe.time, "sleep", lambda s: None):
+            problems, notes = probe.run(ENV, PINS, "ctx", cluster.runner, cluster.output)
+        return cluster, problems, notes
+
+    def test_both_legs_pass_on_a_product_that_does_what_adr_081_assumed(self):
+        cluster, problems, notes = self.go()
+        self.assertEqual(problems, [], problems)
+        text = "\n".join(notes)
+        self.assertIn("syslog leg A", text)
+        self.assertIn("syslog leg B", text)
+        self.assertIn("cut, JSON invalid", text)
+        self.assertIn("lines lost", text)
+
+    def test_the_stall_is_released_and_each_leg_cleans_up(self):
+        cluster, _, _ = self.go()
+        stalls = [c for c in cluster.calls if "exec" in c and c[-1] == "/tmp/syslog-stall"]
+        self.assertGreater(len(stalls), 0)
+        self.assertEqual(sum("touch" in c for c in stalls), sum("rm" in c for c in stalls))
+        deleted = [c[c.index("delete") + 2] for c in cluster.calls if "delete" in c]
+        self.assertEqual(deleted.count("polaris-syslog-probe-a"), 1)
+        self.assertEqual(deleted.count("polaris-syslog-probe-b"), 1)
+
+    def test_no_loss_in_three_rounds_is_not_saturated(self):
+        _, problems, _ = self.go(lose_in_stall=False)
+        self.assertTrue(any("NOT SATURATED" in p for p in problems), problems)
 
 
 class Wiring(unittest.TestCase):

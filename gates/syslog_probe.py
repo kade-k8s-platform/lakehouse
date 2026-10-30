@@ -23,13 +23,16 @@ import math
 import os
 import re
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "install"))
 import network  # noqa: E402
 import release  # noqa: E402
+import syslog_load  # noqa: E402
 
 PORT = 5140
+API_PORT = 8181
 RECEIVER = "receiver"
 FLUENT_BIT = "fluent-bit"
 POLARIS_CONTAINER = "polaris"
@@ -279,6 +282,13 @@ def _fields(record):
     return record.get("fields") or {}
 
 
+def log_problems(polaris_log):
+    """The lines of Polaris's own log that are an error about syslog."""
+    return [f"Polaris's log has an error about syslog: {line[:200]}"
+            for line in polaris_log.splitlines()
+            if "syslog" in line.lower() and ("ERROR" in line or "Exception" in line)]
+
+
 def check_started(records, polaris_log):
     """Proof 1: the handler starts with the keys."""
     if not records:
@@ -295,10 +305,7 @@ def check_started(records, polaris_log):
         problems.append(f"the first frame's PRI is {first.get('pri')!r}")
     if not first.get("json_ok"):
         problems.append("the first frame's message is not a JSON object")
-    for line in polaris_log.splitlines():
-        if "syslog" in line.lower() and ("ERROR" in line or "Exception" in line):
-            problems.append(f"Polaris's log has an error about syslog: {line[:200]}")
-    return problems, notes
+    return problems + log_problems(polaris_log), notes
 
 
 def _logger_ok(record):
@@ -328,16 +335,18 @@ def check_framing(records, sent):
     return problems, notes
 
 
-def classify_long(records, prefix, length, max_length, whole=False):
+def classify_long(records, prefix, length, max_length, whole=False, required=True):
     """Proof 3: what became of the request whose ID has `length` characters (`prefix` starts
-    it) at max-length `max_length`. `whole` makes anything but an intact line a problem."""
+    it) at max-length `max_length`. `whole` makes anything but an intact line a problem;
+    without `required` a line that never arrived is only observed."""
     frames = [r for r in records if (r.get("request_id") or "").startswith(prefix)]
     problems = [f"frame {r.get('n')} of the {length}-character line is not framed"
                 for r in frames if not r.get("framing_ok")]
     if not frames:
         label = "dropped"
-        problems.append(f"the {length}-character line was dropped: no frame at max-length "
-                        f"{max_length}")
+        if required:
+            problems.append(f"the {length}-character line was dropped: no frame at max-length "
+                            f"{max_length}")
     elif len(frames) > 1:
         label = f"split in {len(frames)} frames"
     elif not frames[0].get("json_ok"):
@@ -489,4 +498,222 @@ def check_fluent_bit(records, sent):
             problems.append(f"{request_id} is in {count} of Fluent Bit's records, not 1")
     notes = [f"Fluent Bit wrote {len(records)} records; the body is in {sorted(body_keys)}",
              "record keys: " + ", ".join(sorted(records[0])) if records else "no record"]
+    return problems, notes
+
+
+# The driver.
+
+NORMAL = {"phase": "normal", "count": 80, "workers": 1, "token": 20, "pad": 0}
+BASELINE = {"phase": "base", "count": 1000, "workers": 8, "pad": 1500}
+STALL_ROUNDS = (2000, 4000, 8000)
+LONG_A, LONG_B = (3000,), (9000, 19000)
+MAX_LENGTH = {"a": 2048, "b": 16384}
+SETTLE_QUIET, SETTLE_MAX, SETTLE_POLL = 6, 90, 2
+
+
+def settle(count, quiet=None, timeout=None, poll=None, sleep=None, clock=None):
+    """Calls `count()` until it has not changed for `quiet` seconds, or `timeout` seconds have
+    passed; returns the last count."""
+    sleep, clock = sleep or time.sleep, clock or time.monotonic
+    quiet = SETTLE_QUIET if quiet is None else quiet
+    timeout = SETTLE_MAX if timeout is None else timeout
+    poll = SETTLE_POLL if poll is None else poll
+    end, last, since = clock() + timeout, None, clock()
+    while True:
+        n = count()
+        if n != last:
+            last, since = n, clock()
+        elif clock() - since >= quiet:
+            return n
+        if clock() >= end:
+            return n
+        sleep(poll)
+
+
+def fluent_bit_records(records):
+    """Fluent Bit's records as the receiver's: the body's request id and fields when its JSON
+    parses, the id found in the text when it does not (a line cut by the input)."""
+    out = []
+    for i, r in enumerate(records, 1):
+        key, body = _body(r)
+        text = r.get(key) if key and isinstance(r.get(key), str) else json.dumps(r)
+        record = {"n": i, "framing_ok": True, "json_ok": body is not None,
+                  "declared": len(text.encode("utf-8")), "msg_len": len(text.encode("utf-8")),
+                  "head": text[:160], "tail": text[-120:]}
+        if body is not None:
+            mdc = body.get("mdc")
+            record["request_id"] = mdc.get("requestId") if isinstance(mdc, dict) else None
+            record["fields"] = {k: body[k] for k in ("mdc", "loggerName") if k in body}
+        else:
+            found = re.search(r"syslog-\d+-[ab]-[a-z]+-\d+(?:-x+)?", text)
+            record["request_id"] = found.group(0) if found else None
+        out.append(record)
+    return out
+
+
+class Leg:
+    """One leg: the objects it makes, its pod, and the loads it sends."""
+
+    def __init__(self, env, pins, context, runner, output, leg, pid):
+        self.env, self.pins, self.context = env, pins, context
+        self.runner, self.output, self.leg, self.pid = runner, output, leg, pid
+        self.ns, self.name, self.loads = env["NS_CATALOG_POLARIS"], probe_name(leg), 0
+        self.pod = self.url = None
+        self.problems, self.notes = [], []
+
+    def start(self):
+        c, ns = self.context, self.ns
+        source = json.loads(self.output(_kubectl(c, ns) + [
+            "get", f"deployment/{release.POLARIS}", "-o", "json"]))
+        if self.leg == "a":
+            sidecar, volumes = receiver_container(self.pins)
+            with open(os.path.join(HERE, "syslog_receiver.py"), encoding="utf-8") as f:
+                configmap = code_configmap(ns, f.read())
+        else:
+            sidecar, volumes = fluent_bit_container(self.pins)
+            configmap = fluent_bit_configmap(ns)
+        items = [configmap, probe_deployment(source, self.name, MAX_LENGTH[self.leg], sidecar,
+                                             volumes)]
+        self.runner(apply_command(c, ns), json.dumps({"apiVersion": "v1", "kind": "List",
+                                                      "items": items}))
+        self.runner(rollout_command(c, ns, self.name))
+        pods = json.loads(self.output(pods_command(c, ns, self.name)))["items"]
+        running = [p for p in pods if p.get("status", {}).get("phase") == "Running"
+                   and not p["metadata"].get("deletionTimestamp")]
+        if len(running) != 1:
+            raise RuntimeError(f"{len(running)} running pods for {self.name}, not 1")
+        self.pod = running[0]["metadata"]["name"]
+        self.url = f"http://{running[0]['status']['podIP']}:{API_PORT}"
+
+    def load(self, phases):
+        """Sends `phases` from one load pod; returns its summary lines by phase name."""
+        self.loads += 1
+        spec = {"url": self.url, "realm": release.POLARIS_REALM, "pid": self.pid,
+                "leg": self.leg, "phases": phases}
+        with open(os.path.join(HERE, "syslog_load.py"), encoding="utf-8") as f:
+            script = f.read()
+        image = self.pins["standin_images"]["recorder"]["image"]
+        name = f"syslog-load-{self.pid}-{self.leg}-{self.loads}"
+        out = self.output(load_command(self.env, image, self.context, name, spec), script)
+        lines = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+        if len(lines) != len(phases):
+            raise RuntimeError(f"{name} printed {len(lines)} phase lines for {len(phases)} "
+                               f"phases: {out[-300:]}")
+        for line in lines:
+            self.notes.append(f"load {line['phase']}: {line['sent']} sent, statuses "
+                              f"{line['counts']}, timeouts {line['timeouts']}, errors "
+                              f"{line['errors']}")
+        return {line["phase"]: line for line in lines}
+
+    def ids(self, phase, count):
+        return [syslog_load.request_id(self.pid, self.leg, phase, i) for i in range(count)]
+
+    def receiver_records(self):
+        c, ns = self.context, self.ns
+        settle(lambda: int(self.output(count_command(c, ns, self.pod)).split()[0]))
+        text = self.output(results_command(c, ns, self.pod))
+        return [json.loads(line) for line in text.splitlines() if line.startswith("{")]
+
+    def judge(self, found):
+        self.problems += found[0]
+        self.notes += found[1]
+
+
+def _leg_a(leg):
+    c, ns = leg.context, leg.ns
+    phases = leg.load([NORMAL, {"phase": "long", "lengths": list(LONG_A)}])
+    sent = leg.ids("normal", NORMAL["count"])
+    records = leg.receiver_records()
+    log = leg.output(logs_command(c, ns, leg.pod, POLARIS_CONTAINER))
+    leg.judge(check_started(records, log))
+    leg.judge(classify_long(records, f"syslog-{leg.pid}-a-long-{LONG_A[0]}-", LONG_A[0],
+                            MAX_LENGTH["a"]))
+    leg.judge(check_fields(records, sent, leg.pod))
+    long_status = phases["long"]["counts"]
+    if long_status != {"401": len(LONG_A)}:
+        leg.notes.append(f"the long request was answered {long_status}, not 401: if the "
+                         "server refused it, no line was logged")
+    base = leg.load([BASELINE])["base"]
+    baseline = latency_summary(base["ms"])
+    records = leg.receiver_records()
+    leg.judge(check_framing(records, sent + leg.ids("base", BASELINE["count"])))
+    rounds = []
+    for i, size in enumerate(STALL_ROUNDS, 1):
+        phase = {"phase": f"stall{i}", "count": size, "workers": 8, "pad": BASELINE["pad"]}
+        leg.runner(stall_command(c, ns, leg.pod, True))
+        try:
+            line = leg.load([phase])[phase["phase"]]
+        finally:
+            leg.runner(stall_command(c, ns, leg.pod, False))
+        have = {r.get("request_id") for r in leg.receiver_records()}
+        missing = [x for x in leg.ids(phase["phase"], size) if x not in have]
+        rounds.append({"sent": size, "missing": len(missing), "counts": line["counts"],
+                       "timeouts": line["timeouts"] + line["errors"],
+                       **{k: v for k, v in latency_summary(line["ms"]).items()
+                          if k in ("p50", "p99", "max")}})
+        if missing:
+            break
+    leg.judge(check_stall(baseline, rounds))
+    leg.load([{"phase": "after", "count": 1}])
+    arrived = any(r.get("request_id") == syslog_load.request_id(leg.pid, "a", "after", 0)
+                  for r in leg.receiver_records())
+    leg.notes.append("after the stall was released, one more request "
+                     + ("arrived" if arrived else "did not arrive")
+                     + " at the receiver (observed, not asserted)")
+
+
+def _leg_b(leg):
+    c, ns = leg.context, leg.ns
+    lengths = list(LONG_B)
+    leg.load([{**NORMAL, "phase": "normal"}, {"phase": "long", "lengths": lengths}])
+    sent = leg.ids("normal", NORMAL["count"])
+
+    def lines():
+        return json_lines(leg.output(logs_command(c, ns, leg.pod, FLUENT_BIT)))
+
+    settle(lambda: len(lines()))
+    log = leg.output(logs_command(c, ns, leg.pod, FLUENT_BIT))
+    records = json_lines(log)
+    own = [line for line in log.splitlines() if not line.startswith("{")]
+    leg.notes.append("fluent-bit's own log: " + (" | ".join(own[:12]) or "nothing"))
+    leg.judge(check_fluent_bit([r for r in records if "-long-" not in json.dumps(r)], sent))
+    converted = fluent_bit_records(records)
+    for length in lengths:
+        leg.judge(classify_long(converted, f"syslog-{leg.pid}-b-long-{length}-", length,
+                                MAX_LENGTH["b"], whole=length < MAX_LENGTH["b"],
+                                required=length < MAX_LENGTH["b"]))
+    leg.problems += log_problems(leg.output(logs_command(c, ns, leg.pod, POLARIS_CONTAINER)))
+
+
+def _cleanup(leg_obj):
+    c, ns = leg_obj.context, leg_obj.ns
+    for kind, name in (("deployment", leg_obj.name), ("configmap", CODE_CONFIGMAP),
+                       ("configmap", FB_CONFIGMAP)):
+        try:
+            leg_obj.runner(delete_command(c, ns, kind, name))
+        except (Exception, SystemExit) as error:
+            leg_obj.notes.append(f"deleting {kind}/{name} failed: {error}")
+
+
+def run(env, pins, context, runner, output):
+    """Both legs, one after the other, each deleted when it ends. Returns (problems,
+    notes); a leg that fails in the harness is a problem and does not stop the other."""
+    problems, notes, pid = [], [], os.getpid()
+    for leg_id, body in (("a", _leg_a), ("b", _leg_b)):
+        leg = Leg(env, pins, context, runner, output, leg_id, pid)
+        start = time.monotonic()
+        notes.append(f"== syslog leg {leg_id.upper()}: Polaris's own image, "
+                     + ("a plain receiver" if leg_id == "a" else "Fluent Bit's syslog input")
+                     + f", max-length {MAX_LENGTH[leg_id]}")
+        try:
+            leg.start()
+            body(leg)
+        except (Exception, SystemExit) as error:
+            leg.problems.append(f"leg {leg_id.upper()}: the probe failed: {error}")
+        finally:
+            _cleanup(leg)
+        notes += leg.notes + [f"leg {leg_id.upper()} took {(time.monotonic() - start) / 60:.1f} "
+                              "minutes"]
+        problems += [f"leg {leg_id.upper()}: {p}" if not p.startswith("leg ") else p
+                     for p in leg.problems]
     return problems, notes
