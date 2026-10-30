@@ -129,7 +129,7 @@ flowchart LR
 | [078](078-datahubs-login-goes-through-the-sso-provider-over-oidc-and-the-gate-proves-it-against-dex-behind-a-recorder.md) | Datahub's login goes through the SSO provider over OIDC, and the gate proves it against Dex behind a recorder | Proposed |
 | [079](079-ingress-is-denied-by-default-and-allowed-per-caller-every-rule-restated-with-its-port-and-datahubs-oidc-stand-in-admitted.md) | Ingress is denied by default and allowed per caller, every rule restated with its port, and Datahub's OIDC stand-in admitted | Proposed |
 | [080](080-releases-are-candidates-at-a-main-commit-promoted-without-a-rebuild.md) | Releases are candidates at a `main` commit, promoted without a rebuild | Proposed |
-| [081](081-polaris-logs-are-filtered-in-a-sidecar-into-a-three-day-candidate-index-and-aggregated-by-an-opensearch-transform.md) | Polaris logs are filtered in a sidecar into a 3-day candidate index and aggregated by an OpenSearch transform | Proposed |
+| [081](081-polaris-logs-are-filtered-in-a-sidecar-into-a-three-day-candidate-index-and-aggregated-by-an-opensearch-transform.md) | Polaris logs are filtered in a sidecar into a 3-day candidate index and aggregated by an OpenSearch transform | Accepted |
 
 ## Not ADRs
 
