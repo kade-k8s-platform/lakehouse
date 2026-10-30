@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "install"))
 import network  # noqa: E402
 import release  # noqa: E402
 import syslog_load  # noqa: E402
+import syslog_receiver  # noqa: E402
 
 PORT = 5140
 API_PORT = 8181
@@ -46,6 +47,9 @@ ROLLOUT_TIMEOUT = "300s"
 ACCESS_LOGGER = "io.quarkus.http.access-log"
 # The release's JVM options (ZGC, half the memory) would put a third large JVM on a runner.
 JAVA_OPTS = "-XX:MaxRAMPercentage=25.0 -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError"
+# The release's requests and limits are sized for production; a runner also holds two Polaris
+# pods, Datahub and the stand-ins.
+RESOURCES = {"requests": {"cpu": "250m", "memory": "768Mi"}, "limits": {"memory": "2Gi"}}
 # The properties ADR-081 Decision 1 sets, with the value each leg gives them; `max-length` is
 # the leg's. `truncate` and `block-on-reconnect` stay unset so their defaults are measured.
 SYSLOG_PROPERTIES = (
@@ -171,6 +175,7 @@ def probe_deployment(source, name, max_length, sidecar, volumes):
     polaris = next((c for c in pod["containers"] if c["name"] == POLARIS_CONTAINER),
                    pod["containers"][0])
     drop = set(env) | {"JAVA_OPTS"}
+    polaris["resources"] = copy.deepcopy(RESOURCES)
     polaris["env"] = ([e for e in polaris.get("env", []) if e["name"] not in drop]
                       + [{"name": "JAVA_OPTS", "value": JAVA_OPTS}]
                       + [{"name": k, "value": v} for k, v in env.items()])
@@ -215,6 +220,12 @@ def results_command(context, namespace, pod):
 
 def count_command(context, namespace, pod):
     return _exec(context, namespace, pod, "wc", "-l", RESULTS_FILE)
+
+
+def count_matching_command(context, namespace, pod, text):
+    """How many lines of the receiver's file hold `text`; 0, not a failure, when none."""
+    return _exec(context, namespace, pod, "sh", "-c",
+                 f"grep -c -F -e '{text}' {RESULTS_FILE} || true")
 
 
 def logs_command(context, namespace, pod, container):
@@ -284,9 +295,11 @@ def _fields(record):
 
 def log_problems(polaris_log):
     """The lines of Polaris's own log that are an error about syslog."""
+    # The load's request ids start with `syslog-` and appear in Polaris's lines.
     return [f"Polaris's log has an error about syslog: {line[:200]}"
             for line in polaris_log.splitlines()
-            if "syslog" in line.lower() and ("ERROR" in line or "Exception" in line)]
+            if "syslog" in syslog_receiver.REQUEST_ID.sub("", line).lower()
+            and ("ERROR" in line or "Exception" in line)]
 
 
 def check_started(records, polaris_log):
@@ -482,11 +495,14 @@ def _body(record):
 
 def check_fluent_bit(records, sent):
     """Proof 2 on leg B: every request's line once in Fluent Bit's output with a JSON body."""
-    problems, found, body_keys = [], {}, set()
+    problems, found, body_keys, sent_set = [], {}, set(), set(sent)
     for r in records:
         key, body = _body(r)
         if body is None:
-            problems.append(f"a record's body is not a JSON object: {json.dumps(r)[:200]}")
+            ids = set(syslog_receiver.REQUEST_ID.findall(json.dumps(r))) & sent_set
+            if ids:
+                problems.append(f"the body of {sorted(ids)[0]} is not a JSON object: "
+                                f"{json.dumps(r)[:200]}")
             continue
         body_keys.add(key)
         mdc = body.get("mdc")
@@ -545,7 +561,7 @@ def fluent_bit_records(records):
             record["request_id"] = mdc.get("requestId") if isinstance(mdc, dict) else None
             record["fields"] = {k: body[k] for k in ("mdc", "loggerName") if k in body}
         else:
-            found = re.search(r"syslog-\d+-[ab]-[a-z]+-\d+(?:-x+)?", text)
+            found = syslog_receiver.REQUEST_ID.search(text)
             record["request_id"] = found.group(0) if found else None
         out.append(record)
     return out
@@ -626,13 +642,15 @@ def _leg_a(leg):
     records = leg.receiver_records()
     log = leg.output(logs_command(c, ns, leg.pod, POLARIS_CONTAINER))
     leg.judge(check_started(records, log))
-    leg.judge(classify_long(records, f"syslog-{leg.pid}-a-long-{LONG_A[0]}-", LONG_A[0],
-                            MAX_LENGTH["a"]))
-    leg.judge(check_fields(records, sent, leg.pod))
     long_status = phases["long"]["counts"]
-    if long_status != {"401": len(LONG_A)}:
-        leg.notes.append(f"the long request was answered {long_status}, not 401: if the "
-                         "server refused it, no line was logged")
+    answered = long_status == {"401": len(LONG_A)}
+    if not answered:
+        leg.problems.append(f"the long request was answered {long_status}, not 401: the server "
+                            "may have refused it before Polaris logged it, so the truncation "
+                            "proof is inconclusive (use a shorter id)")
+    leg.judge(classify_long(records, f"syslog-{leg.pid}-a-long-{LONG_A[0]}-", LONG_A[0],
+                            MAX_LENGTH["a"], required=answered))
+    leg.judge(check_fields(records, sent, leg.pod))
     base = leg.load([BASELINE])["base"]
     baseline = latency_summary(base["ms"])
     records = leg.receiver_records()
@@ -645,9 +663,11 @@ def _leg_a(leg):
             line = leg.load([phase])[phase["phase"]]
         finally:
             leg.runner(stall_command(c, ns, leg.pod, False))
-        have = {r.get("request_id") for r in leg.receiver_records()}
-        missing = [x for x in leg.ids(phase["phase"], size) if x not in have]
-        rounds.append({"sent": size, "missing": len(missing), "counts": line["counts"],
+        settle(lambda: int(leg.output(count_command(c, ns, leg.pod)).split()[0]))
+        got = int(leg.output(count_matching_command(c, ns, leg.pod,
+                                                    f"-{phase['phase']}-")).strip() or 0)
+        missing = max(size - got, 0)
+        rounds.append({"sent": size, "missing": missing, "counts": line["counts"],
                        "timeouts": line["timeouts"] + line["errors"],
                        **{k: v for k, v in latency_summary(line["ms"]).items()
                           if k in ("p50", "p99", "max")}})
@@ -665,7 +685,12 @@ def _leg_a(leg):
 def _leg_b(leg):
     c, ns = leg.context, leg.ns
     lengths = list(LONG_B)
-    leg.load([{**NORMAL, "phase": "normal"}, {"phase": "long", "lengths": lengths}])
+    phases = leg.load([{**NORMAL, "phase": "normal"}, {"phase": "long", "lengths": lengths}])
+    answered = phases["long"]["counts"] == {"401": len(lengths)}
+    if not answered:
+        leg.problems.append(f"the long requests were answered {phases['long']['counts']}, not "
+                            "401: the server may have refused one before Polaris logged it, so "
+                            "the truncation proof is inconclusive")
     sent = leg.ids("normal", NORMAL["count"])
 
     def lines():
@@ -681,7 +706,7 @@ def _leg_b(leg):
     for length in lengths:
         leg.judge(classify_long(converted, f"syslog-{leg.pid}-b-long-{length}-", length,
                                 MAX_LENGTH["b"], whole=length < MAX_LENGTH["b"],
-                                required=length < MAX_LENGTH["b"]))
+                                required=answered and length < MAX_LENGTH["b"]))
     leg.problems += log_problems(leg.output(logs_command(c, ns, leg.pod, POLARIS_CONTAINER)))
 
 

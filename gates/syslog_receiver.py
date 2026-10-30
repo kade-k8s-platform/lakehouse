@@ -30,7 +30,7 @@ MAX_FRAME = 1 << 20
 # The fields of Polaris's JSON line the gate checks; the record keeps their values.
 FIELDS = ("hostName", "sequence", "loggerName", "level", "mdc", "threadName", "timestamp")
 # Request IDs the gate sends (gates/syslog_load.py); a cut line still shows the start of one.
-REQUEST_ID = re.compile(r"syslog-\d+-[ab]-[a-z]+-\d+(?:-x+)?")
+REQUEST_ID = re.compile(r"syslog-\d+-[ab]-[a-z]+\d*-\d+(?:-x+)?")
 SAMPLED = 50
 ENVELOPE = re.compile(
     r"<(\d{1,3})>(\d+) (\S+) (\S+) (\S+) (\S+) (\S+) (-|(?:\[(?:[^\]\\]|\\.)*\])+)(?: (.*))?",
@@ -118,6 +118,8 @@ def _type(value):
 
 def record_of(n, frame, framing_ok=True):
     """The line the receiver keeps for frame number `n`."""
+    # The octets a frame holds are the octets its prefix declared; a prefix that disagrees with
+    # the content shows as a framing error on the next frame, not here.
     record = {"n": n, "framing_ok": framing_ok, "declared": len(frame), "actual": len(frame)}
     try:
         envelope = parse_syslog(frame)

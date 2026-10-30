@@ -127,6 +127,14 @@ class Clone(unittest.TestCase):
         polaris = self.pod["containers"][0]
         self.assertEqual([m["name"] for m in polaris["volumeMounts"]], ["config"])
 
+    def test_the_probe_does_not_ask_for_the_releases_resources(self):
+        src = source()
+        src["spec"]["template"]["spec"]["containers"][0]["resources"] = {
+            "requests": {"memory": "8Gi"}, "limits": {"memory": "8Gi", "cpu": "4"}}
+        dep = probe.probe_deployment(src, "p", 2048, self.container, self.volumes)
+        resources = dep["spec"]["template"]["spec"]["containers"][0]["resources"]
+        self.assertEqual(resources, probe.RESOURCES)
+
     def test_polaris_env(self):
         env = self.pod["containers"][0]["env"]
         by_name = {e["name"]: e for e in env}
@@ -244,6 +252,9 @@ class Checks(unittest.TestCase):
         log = "2026 ERROR [io.quarkus.logging] could not open syslog socket"
         self.assertNotEqual(probe.check_started([ok], log)[0], [])
         self.assertEqual(probe.check_started([ok], "INFO started")[0], [])
+        # the load's own request ids start with `syslog-`
+        own = '{"level":"ERROR","message":"denied","mdc":{"requestId":"syslog-1-a-stall1-5"}}'
+        self.assertEqual(probe.check_started([ok], own)[0], [])
 
     def test_framing(self):
         records = [access(1), access(2)]
@@ -344,6 +355,17 @@ class Checks(unittest.TestCase):
         bad = line(1)
         bad["message"] = "{not json"
         self.assertNotEqual(probe.check_fluent_bit([line(0), bad], sent)[0], [])
+
+    def test_fluent_bit_ignores_a_record_that_is_no_request(self):
+        sent = ["syslog-1-b-normal-0"]
+        good = {"date": 1.0, "message": json.dumps({"mdc": {"requestId": sent[0]}})}
+        stray = {"date": 1.0, "message": "plain text before json logging"}
+        self.assertEqual(probe.check_fluent_bit([good, stray], sent)[0], [])
+
+    def test_the_request_id_pattern_takes_phase_names_with_a_digit(self):
+        import syslog_receiver
+        self.assertEqual(syslog_receiver.REQUEST_ID.search('x "syslog-12-a-stall3-7" y').group(0),
+                         "syslog-12-a-stall3-7")
 
     def test_fluent_bit_log_parsing(self):
         log = '[2026/10/30] [ info] started\n{"date":1.0,"message":"x"}\nnoise\n'
@@ -454,6 +476,9 @@ class Cluster:
                                           "status": {"phase": "Running", "podIP": "10.0.0.9"}}]})
         if argv[3:5] == ["-n", "polaris-ns"] and "run" in argv:
             return self.load(json.loads(argv[-1]))
+        if "grep" in text and "sh" in argv:
+            needle = argv[-1].split("-e '")[1].split("'")[0]
+            return f"{sum(1 for r in self.lines() if needle in r.get('request_id', ''))}\n"
         if "wc" in argv:
             return f"{len(self.lines())} /tmp/syslog-received.jsonl\n"
         if "cat" in argv:
