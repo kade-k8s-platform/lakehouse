@@ -1,6 +1,6 @@
 # ADR-024: The log batch hands processed files to the observability team's Fluent Bit
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-081
 - **Date:** 2026-10-10
 - **Related:** ADR-013, ADR-014, ADR-023
 
