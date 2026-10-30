@@ -51,7 +51,7 @@ advancedConfig:
   quarkus.log.syslog.syslog-type: "rfc5424"
   quarkus.log.syslog.use-counting-framing: "true"
   quarkus.log.syslog.json.enabled: "true"
-  quarkus.log.syslog.max-length: "16384"
+  quarkus.log.syslog.max-length: "65536"
   quarkus.log.syslog.async.enabled: "true"
   quarkus.log.syslog.async.queue-length: "512"
   quarkus.log.syslog.async.overflow: "discard"

@@ -11,19 +11,20 @@ image: fluent/fluent-bit:5.1.4@sha256:a9cc9627aeabb8bb33077ee85b6ec8c0fe40aff8e7
 configMapName: polaris-log-sidecar
 
 # Quarkus's syslog handler connects here, from the same pod (ADR-081 Decision 1). maxLength is
-# Quarkus's `max-length` and stays below the input's bufferMaxSize; queueLength is the depth of
-# Quarkus's async queue, which drops when full instead of blocking a request thread.
+# Quarkus's `max-length`, above the 15 KB and 40 KB exception lines the contract measured so that
+# a line is not cut into invalid JSON; it stays below the input's bufferMaxSize. queueLength is
+# the depth of Quarkus's async queue, which drops when full instead of blocking a request thread.
 syslog:
   listen: 127.0.0.1
   port: 5140
-  maxLength: 16384
+  maxLength: 65536
   queueLength: 512
 
 # The TCP input's caps. memBufLimit pauses the input, which backs up Polaris's queue until it
 # discards. No storage.* anywhere: the buffer is memory only.
 input:
   bufferChunkSize: 32KB
-  bufferMaxSize: 64KB
+  bufferMaxSize: 128KB
   memBufLimit: 8MB
 
 # The main Fluent Bit's input (tasks#2, destination a). Name, TLS and authentication wait for
