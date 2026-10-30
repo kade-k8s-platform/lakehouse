@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.configMapName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  # Fluent Bit's YAML configuration. Key names are checked against schema.json of the pinned
+  # image; that this file starts it is the gate's to prove (L3). Scalars are written as JSON,
+  # which YAML reads as the same type.
+  fluent-bit.yaml: |
+    service:
+      flush: 1
+      log_level: info
+      parsers_file: {{ include "polaris-log-sidecar.mountPath" . }}/parsers.yaml
+    pipeline:
+      inputs:
+        - name: syslog
+          mode: tcp
+          listen: {{ .Values.syslog.listen | toJson }}
+          port: {{ .Values.syslog.port | toJson }}
+          format: octet_counting
+          parser: polaris-syslog
+          buffer_chunk_size: {{ .Values.input.bufferChunkSize | toJson }}
+          buffer_max_size: {{ .Values.input.bufferMaxSize | toJson }}
+          mem_buf_limit: {{ .Values.input.memBufLimit | toJson }}
+      filters:
+        - name: parser
+          match: '*'
+          key_name: message
+          parser: polaris-json
+          reserve_data: false
+          preserve_key: false
+        - name: lua
+          match: '*'
+          script: {{ include "polaris-log-sidecar.mountPath" . }}/policy_v5.lua
+          call: polaris_filter
+          type_int_key: sequence threadId http_status response_size
+      outputs:
+        - name: forward
+          match: '*'
+          host: {{ .Values.output.host | toJson }}
+          port: {{ .Values.output.port | toJson }}
+          tls: {{ .Values.output.tls | toJson }}
+          tls.verify: {{ .Values.output.tlsVerify | toJson }}
+          require_ack_response: {{ .Values.output.requireAck | toJson }}
+          retry_limit: {{ .Values.output.retryLimit | toJson }}
+  # polaris-syslog is the image's syslog-rfc5424 (parsers.conf of 5.1.4), copied so that the
+  # sidecar does not mount over /fluent-bit/etc. The body, a JSON line from Quarkus, is `message`.
+  parsers.yaml: |
+    parsers:
+      - name: polaris-syslog
+        format: regex
+        regex: '^\<(?<pri>[0-9]{1,5})\>1 (?<time>[^ ]+) (?<host>[^ ]+) (?<ident>[^ ]+) (?<pid>[-0-9]+) (?<msgid>[^ ]+) (?<extradata>(\[(.*?)\]|-)) (?<message>.+)$'
+        time_key: time
+        time_format: '%Y-%m-%dT%H:%M:%S.%L%z'
+        time_keep: true
+      - name: polaris-json
+        format: json
+  policy_v5.lua: |
+{{ .Files.Get "files/policy_v5.lua" | indent 4 }}

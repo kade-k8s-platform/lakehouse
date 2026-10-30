@@ -155,14 +155,14 @@ class Schema(unittest.TestCase):
         self.refused("extra=1", key="extra")
 
     def test_a_syslog_port_of_zero_or_a_string(self):
-        self.refused("syslog.port=0", key="syslog.port")
-        self.refused(strings=["syslog.port=5140"], key="syslog.port")
+        self.refused("syslog.port=0", key="/syslog/port")
+        self.refused(strings=["syslog.port=5140"], key="/syslog/port")
 
     def test_an_image_without_a_digest(self):
-        self.refused("image=fluent/fluent-bit:5.1.4", key="image")
+        self.refused("image=fluent/fluent-bit:5.1.4", key="/image")
 
     def test_tls_as_a_string(self):
-        self.refused(strings=["output.tls=yes"], key="output.tls")
+        self.refused(strings=["output.tls=yes"], key="/output/tls")
 
 
 class Config(unittest.TestCase):
@@ -210,6 +210,13 @@ class Config(unittest.TestCase):
         self.assertEqual(lua["name"], "lua")
         self.assertEqual(lua["script"], f"{MOUNT}/policy_v5.lua")
         self.assertEqual(lua["call"], "polaris_filter")
+
+    def test_numbers_leave_the_lua_filter_as_integers(self):
+        # The filter's numbers are doubles unless Fluent Bit is told which keys are integers
+        # (type_int_key, a space-delimited string in the image's schema.json).
+        _, lua = self.cfg["pipeline"]["filters"]
+        self.assertEqual(set(lua["type_int_key"].split()),
+                         {"sequence", "threadId", "http_status", "response_size"})
 
     def test_one_forward_output_from_the_values(self):
         (out,) = self.cfg["pipeline"]["outputs"]
