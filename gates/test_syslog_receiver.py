@@ -150,6 +150,8 @@ class RecordOf(unittest.TestCase):
 class Pump(unittest.TestCase):
     def pump(self, stall, received, ready=None):
         a, b = socket.socketpair()
+        self.addCleanup(b.close)
+        self.addCleanup(a.close)
         a.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
         thread = threading.Thread(
             target=receiver.pump, args=(b, stall, received.extend), kwargs={"poll": 0.01})
