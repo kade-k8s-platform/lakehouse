@@ -1,0 +1,37 @@
+{
+  "policy": {
+    "description": "Contract v3: the candidate index is deleted 3d after its creation.",
+    "default_state": "hot",
+    "states": [
+      {
+        "name": "hot",
+        "actions": [],
+        "transitions": [
+          {
+            "state_name": "delete",
+            "conditions": {
+              "min_index_age": "3d"
+            }
+          }
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [
+          {
+            "delete": {}
+          }
+        ],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {
+        "index_patterns": [
+          "polaris-logs-candidate-*"
+        ],
+        "priority": 100
+      }
+    ]
+  }
+}

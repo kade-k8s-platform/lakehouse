@@ -1,0 +1,115 @@
+{
+  "index_patterns": [
+    "polaris-logs-error-*"
+  ],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 1
+    },
+    "mappings": {
+      "dynamic": false,
+      "_meta": {
+        "contract_version": 3
+      },
+      "properties": {
+        "timestamp": {
+          "type": "date"
+        },
+        "sequence": {
+          "type": "long"
+        },
+        "loggerName": {
+          "type": "keyword"
+        },
+        "level": {
+          "type": "keyword"
+        },
+        "message": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 1024
+            }
+          }
+        },
+        "threadName": {
+          "type": "keyword"
+        },
+        "threadId": {
+          "type": "long"
+        },
+        "mdc": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "keyword"
+            },
+            "realmId": {
+              "type": "keyword"
+            }
+          }
+        },
+        "hostName": {
+          "type": "keyword"
+        },
+        "client_ip": {
+          "type": "keyword"
+        },
+        "user_principal_name": {
+          "type": "keyword"
+        },
+        "http_method": {
+          "type": "keyword"
+        },
+        "api_path": {
+          "type": "keyword"
+        },
+        "http_status": {
+          "type": "long"
+        },
+        "response_size": {
+          "type": "long"
+        },
+        "access_log_parse_error": {
+          "type": "boolean"
+        },
+        "secret_redacted": {
+          "type": "boolean"
+        },
+        "exception": {
+          "type": "object",
+          "enabled": false
+        },
+        "event_id": {
+          "type": "keyword"
+        },
+        "index_class": {
+          "type": "keyword"
+        },
+        "policy_rule": {
+          "type": "keyword"
+        },
+        "policy": {
+          "type": "keyword"
+        },
+        "resource": {
+          "type": "keyword"
+        },
+        "resource_kind": {
+          "type": "keyword"
+        },
+        "api_kind": {
+          "type": "keyword"
+        },
+        "status_class": {
+          "type": "keyword"
+        }
+      }
+    },
+    "aliases": {
+      "polaris-logs-source": {}
+    }
+  }
+}
