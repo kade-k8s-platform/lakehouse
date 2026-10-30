@@ -266,27 +266,53 @@ error index keeps the lines 30 days for reading; the aggregate keeps the counts 
 ```mermaid
 flowchart LR
     subgraph POD["Polaris pod, NS_CATALOG_POLARIS"]
-        P["Polaris container"] -->|"polaris-pod.log"| V[("emptyDir")]
-        V -->|"read-only tail"| S["log-sidecar<br/>Fluent Bit, audit policy v5"]
+        P["Polaris container"] -->|"syslog TCP localhost, JSON"| S["log-sidecar<br/>Fluent Bit, audit policy v5"]
     end
     P -->|"stdout"| C["cluster log collection"]
-    S -->|"kept lines only"| F["main Fluent Bit<br/>(observability team)"]
-    F --> I[("candidate index<br/>ISM delete after 3 days")]
+    S -->|"kept lines only, routed by rule"| F["main Fluent Bit<br/>(observability team)"]
+    F -->|"404, writes, management POST"| I[("candidate index<br/>ISM 3 days")]
+    F -->|"ERROR, WARN, 5xx, other 4xx"| E[("error index<br/>ISM 30 days")]
     I -->|"transform job"| A[("aggregate index<br/>normal retention")]
+    E -->|"transform job"| A
 ```
 
 ## Alternatives considered
 
 - **Keep ADR-024 and ADR-036:** the whole log leaves the pod, needs a `ReadWriteMany` class on
   every target and is re-read each hour. Rejected by Kade's decision.
-- **The sidecar reads stdout:** needs `hostPath` (refused by Pod Security baseline) and parses
-  text; ADR-014's reason is not known.
+- **A file on an `emptyDir`, read by the sidecar** (this ADR's first text): the observability
+  team's manager forbids a log file; it also needs rotation and node ephemeral storage.
+- **The sidecar reads stdout:** impossible from a sidecar without `hostPath` (refused by Pod
+  Security baseline), and stdout is text.
+- **Node log files / `hostPath`:** refused by Pod Security baseline.
+- **The Kubernetes API (`pods/log`):** needs RBAC for our Fluent Bit (forbidden) and a custom
+  process.
+- **`/proc/<pid>/fd` of the Polaris process:** reads the runtime's stream behind its back; needs
+  a shared process namespace and privileges.
+- **A tee wrapper in the container's command:** overrides the upstream image's entrypoint
+  (ADR-009 keeps it unchanged).
+- **OTLP logs into the sidecar** (fallback if syslog fails on the gate): Polaris 1.6.0's
+  OpenTelemetry logs support is **NOT KNOWN**.
+- **Data Prepper** (fallback after OTLP): a new component, **Kade's call** with options and
+  upkeep cost first.
+- **An ingest pipeline or transform on the cluster's existing raw index:** cannot parse the
+  text into keywords for routing and cannot filter before indexing; the index keeps the whole
+  log.
+- **UDP syslog:** drops lines silently and has no framing; only TCP.
+- **Sending to OpenSearch from the sidecar:** needs credentials the Fluent Bit team does not
+  permit.
+- **Error lines in both the candidate and the error index:** rejected by Kade; duplicated
+  storage, the error index alone holds them.
+- **One index with two retentions:** ISM deletes by index age, not by document, so one index
+  cannot keep some lines 3 days and others 30; two indices are needed.
+- **404 lines to the error index:** rejected; they are counted, not read, and would fill the
+  30-day index (volume **NOT KNOWN**, L6).
 - **A node-level DaemonSet filter run by the observability team:** moves Polaris-specific
   parsing to a team that does not own Polaris (ADR-024 rejected shipping raw logs).
 - **The batch as a sidecar:** keeps the batch's bookkeeping, which Kade has dropped, and its
   hourly shape.
 - **A CronJob that aggregates candidate into aggregate:** Kade chose a transform and no CronJob.
-- **Candidate and aggregate in one index:** Kade chose two, so retention differs.
+- **Candidate and aggregate in one index:** Kade chose separate indices, so retention differs.
 - **Keeping the dropped-line counters:** Kade chose to drop them.
 - **A chart patch for `extraContainers`, or a mutating webhook:** a patched chart needs its own
   ADR (ADR-072 for Datahub's one line) and a webhook is a new service; Kade chose the native
@@ -297,14 +323,45 @@ flowchart LR
 ## Consequences
 
 - No `ReadWriteMany` class is needed on a target cluster for logs.
-- The bookkeeping rows listed in Decision 5 are lost; the books can no longer be balanced.
+- The bookkeeping rows listed in Decision 6 are lost; the books can no longer be balanced.
 - A change to the filter rolls Polaris's two pods (a PodDisruptionBudget with `minAvailable: 1`
   keeps one up).
-- A pod deleted before the sidecar sent a line loses that line.
-- Polaris's ephemeral storage grows by the `emptyDir`'s `sizeLimit`.
+- A pod that loses its connection or restarts loses lines (Decision 1), not counted.
+- Polaris's pod gains no volume for logs. The sidecar's memory limit covers its buffer; the
+  asynchronous queue lives in Polaris's heap (placeholder, L1).
 - A target cluster below the native sidecar's GA version cannot run Polaris with this ADR.
-- The observability team owns the template, the ISM policy and the transform unless L0b says
+- **L1 proves first, on the gate, before anything else is built:**
+  1. Polaris 1.6.0 accepts the `quarkus.log.syslog.*` keys through `advancedConfig`.
+  2. JSON reaches the sidecar as one object per line with the contract's fields.
+  3. Octet-counting framing works between Quarkus and Fluent Bit's `syslog` input on the pinned
+     image, including a line over 2048 bytes.
+  4. With the sidecar stopped and a request load, Polaris's request threads do not block, and
+     the `discard` is seen.
+  5. The connection is re-made after a sidecar restart.
+
+  If 1 to 3 fail, the fallbacks are OTLP logs, then Data Prepper (Kade's call).
+- A network policy from Polaris's pod to the main Fluent Bit's port is needed (egress is not
+  restricted today, ADR-048; the observability team's ingress is theirs): L5 states the rule and
+  the stand-in.
+- Two index templates, two ISM policies (3 days, 30 days) and a second route on the main
+  Fluent Bit's input are asked of the observability team (L0b), who owns them (ADR-024) unless
+  L0b settles otherwise.
+- The transform reads two indices, so the aggregate keeps counts of errors after the error
+  index's 30 days.
+- The observability team owns the template, the ISM policies and the transform unless L0b says
   otherwise. Work follows in this order: L0b (agreement), L1 (sidecar and contract v3), L2 and
-  L3 (template, ISM, transform), L4 to L6 (gates, stand-ins, install), L7 (removal), L8 (living
+  L3 (templates, ISM, transform), L4 to L6 (gates, stand-ins, install), L7 (removal), L8 (living
   documents). The numbering may differ.
 - ADR-081 is Proposed: no code enters until Kade accepts it (ADR-001).
+
+**NOT KNOWN, collected** (ADR-000 rule 10; each is proved or settled by the task named):
+
+- L0b: the main Fluent Bit's input type, TLS, authentication and endpoint; the owner of the
+  templates, ISM policies and transform; whether routing is by tag or by two streams.
+- L1: the Quarkus version in Polaris 1.6.0; JSON on the syslog handler and its fields
+  (`hostName`, `sequence`, MDC); `use-counting-framing` against `octet_counting` and the pinned
+  Fluent Bit's framing; the syslog parser's body key; the `max-length` needed; whether an
+  overflow is reported; OTLP logs in 1.6.0; hot reload; `Generate_ID`; `grep` on integers.
+- L1/L3: the transform with a source over two indices; its shortest interval; the bucket `_id`.
+- L6: rule 2b's volume; the error index's volume and the ISM 30-day behaviour.
+- First install on a target: the Kubernetes version of the target clusters; the ISM version.
