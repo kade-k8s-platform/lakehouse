@@ -97,6 +97,8 @@ class Builders(unittest.TestCase):
         self.assertIn("PUT", argv)
         self.assertEqual(gate.parse_http_answer('{"a":1}\n200'), (200, {"a": 1}))
         self.assertEqual(gate.parse_http_answer("\n404"), (404, {}))
+        status, body = gate.parse_http_answer("Unauthorized\n401")
+        self.assertEqual((status, body["raw"]), (401, "Unauthorized"))
 
 
 class Routing(unittest.TestCase):

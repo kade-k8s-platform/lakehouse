@@ -266,13 +266,18 @@ def _wait(poll, what, timeout, clock, sleep, step=3):
 
 
 def _clean(http):
-    """A re-run on the same cluster: whatever an earlier run left, gone (answers ignored)."""
+    """A re-run on the same cluster: whatever an earlier run left, gone -> the problems of an
+    index deletion that was neither done nor needless (a 404); the other answers are ignored."""
     http("POST", f"/_plugins/_transform/{TRANSFORM_ID}/_stop")
     http("DELETE", f"/_plugins/_transform/{TRANSFORM_ID}")
+    problems = []
     for pattern in ("polaris-logs-candidate-*", "polaris-logs-error-*", AGGREGATE):
-        http("DELETE", f"/{pattern}")
+        status, body = http("DELETE", f"/{pattern}")
+        if status not in (200, 404):
+            problems.append(f"cleaning {pattern}: {status} {body}")
     for policy in POLICY_IDS.values():
         http("DELETE", f"/_plugins/_ism/policies/{policy}")
+    return problems
 
 
 def _search(http, pattern):
@@ -306,7 +311,9 @@ def check(http, forward, logs, sleep=time.sleep, clock=time.monotonic, timeout=3
     problems, notes = [], []
     kept = [e["output"] for e in contract.kept_examples()]
     routing, transform = contract.routing(), contract.transform()
-    _clean(http)
+    problems += _clean(http)
+    if problems:
+        return problems, notes
     for kind, policy in contract.ism_policies().items():
         status, body = http("PUT", f"/_plugins/_ism/policies/{POLICY_IDS[kind]}", policy)
         if status >= 300:
@@ -329,9 +336,9 @@ def check(http, forward, logs, sleep=time.sleep, clock=time.monotonic, timeout=3
             return (found, odd) if sum(map(len, found.values())) >= total else None
         return poll
 
-    problems += send(kept, "pass 1")
-    if problems:
-        return problems, notes
+    failed = send(kept, "pass 1")
+    if failed:
+        return failed, notes
     got, why = _wait(have(len(kept)), "the 15 records in the line indices", read_timeout,
                      clock, sleep)
     if why:
@@ -388,13 +395,15 @@ def check(http, forward, logs, sleep=time.sleep, clock=time.monotonic, timeout=3
                         f"records {expected_counters}")
     ids = {h["_id"] for h in hits}
     sample = sorted(ids)[0] if ids else None
-    types = {k: type(docs[0].get(k)).__name__ for k in TIME_FIELDS}
-    notes.append(f"time fields: {types}; response_bytes: {docs[0].get('response_bytes')!r}")
+    if not rows:
+        return problems + [f"{AGGREGATE} holds no bucket"], notes
+    types = {k: type(rows[0].get(k)).__name__ for k in TIME_FIELDS}
+    notes.append(f"time fields: {types}; response_bytes: {rows[0].get('response_bytes')!r}")
 
     again = pass2_records(kept)
-    problems += send(again, "pass 2")
-    if problems and problems[-1].startswith("pass 2"):
-        return problems, notes
+    failed = send(again, "pass 2")
+    if failed:
+        return problems + failed, notes
     got, why = _wait(have(len(again)), "the 17 records in the line indices", read_timeout,
                      clock, sleep)
     if why:
@@ -408,6 +417,11 @@ def check(http, forward, logs, sleep=time.sleep, clock=time.monotonic, timeout=3
         return problems + [why], notes
     docs2 = [h["_source"] for h in hits2]
     problems += [f"pass 2: {p}" for p in aggregate_run_problems(expected2, docs2)]
+    rows2 = [d for d in docs2 if d.get("hostName") != PROBE_HOST]
+    want2 = counters([r for r in again if not _is_probe(r)], routing)
+    if counters(rows2, routing) != want2:
+        problems.append(f"pass 2: counters differ: aggregate {counters(rows2, routing)}, "
+                        f"records {want2}")
     lost = ids - {h["_id"] for h in hits2}
     if lost:
         problems.append(f"pass 2: bucket _id(s) {sorted(lost)} are gone: a bucket's _id is not "

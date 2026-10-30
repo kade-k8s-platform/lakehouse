@@ -91,6 +91,11 @@ class AggregateProblems(unittest.TestCase):
         doc["response_bytes"] = 360.5
         self.assertTrue(any("response_bytes" in p for p in contract.aggregate_problems(doc)))
 
+    def test_a_float_count_is_not_folded(self):
+        doc = self.example()
+        doc["lines"] = 3.0
+        self.assertTrue(any("lines" in p for p in contract.aggregate_problems(doc)))
+
     def test_a_string_count(self):
         doc = self.example()
         doc["lines"] = "3"

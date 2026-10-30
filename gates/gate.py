@@ -2766,7 +2766,12 @@ def logs_opensearch_argv(env, method, path):
 def parse_http_answer(text):
     """curl's `body\nstatus` -> (status, the body as JSON, {} when it is empty)."""
     body, _, status = text.rpartition("\n")
-    return int(status), (json.loads(body) if body.strip() else {})
+    if not body.strip():
+        return int(status), {}
+    try:
+        return int(status), json.loads(body)
+    except ValueError:
+        return int(status), {"raw": body.strip()[:500]}
 
 
 def logs_opensearch_http(env, method, path, body=None):

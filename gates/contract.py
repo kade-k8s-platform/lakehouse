@@ -152,9 +152,10 @@ def line_problems(output):
 
 
 def aggregate_problems(doc):
-    """An aggregate document against its schema. A float with no fraction (OpenSearch's `sum`
-    may write 360.0) is the integer JSON Schema 2020-12 calls it; 360.5 still fails."""
-    if isinstance(doc, dict):
-        doc = {k: int(v) if isinstance(v, float) and v.is_integer() else v
-               for k, v in doc.items()}
+    """An aggregate document against its schema. `response_bytes` as a float with no fraction
+    (OpenSearch's `sum` may write 360.0) is the integer JSON Schema 2020-12 calls it; 360.5 still
+    fails, and so does a float in any other field."""
+    value = doc.get("response_bytes") if isinstance(doc, dict) else None
+    if isinstance(value, float) and value.is_integer():
+        doc = {**doc, "response_bytes": int(value)}
     return problems(doc, load_v3("aggregate"))
