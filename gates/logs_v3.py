@@ -297,7 +297,7 @@ def _found(http):
     return found, odd
 
 
-def _transform_state(http, found):
+def _transform_state(http, found, logs):
     """Why a transform's wait ran out: its status and failure_reason, how many aggregate
     documents there were, and the rest of its explain answer."""
     status, explain = http("GET", f"/_plugins/_transform/{TRANSFORM_ID}/_explain")
@@ -306,7 +306,15 @@ def _transform_state(http, found):
         meta = explain.get(TRANSFORM_ID, {}).get("transform_metadata", {})
     return (f"transform status {meta.get('status')!r}, failure_reason "
             f"{meta.get('failure_reason')!r}; {found} aggregate document(s); explain "
-            f"({status}): {json.dumps(explain)[:3000]}")
+            f"({status}): {json.dumps(explain)[:1500]}; OpenSearch's log: "
+            f"{_log_hints(logs('logs-opensearch'))}")
+
+
+def _log_hints(text, keep=12):
+    """The last `keep` lines of a log that name a failure or the transform or a mapping."""
+    hints = [line.strip()[:400] for line in text.splitlines()
+             if re.search(r"ERROR|WARN|[Ee]xception|mapper|parse|transform", line)]
+    return " | ".join(hints[-keep:])
 
 
 def _aggregate(http):
@@ -396,7 +404,7 @@ def check(http, forward, logs, sleep=time.sleep, clock=time.monotonic, timeout=3
     hits, why = _wait(aggregated(len(expected)), f"the {len(expected)} buckets in {AGGREGATE}",
                       timeout, clock, sleep)
     if why:
-        return problems + [f"{why}; {_transform_state(http, len(_aggregate(http)))}"], notes
+        return problems + [f"{why}; {_transform_state(http, len(_aggregate(http)), logs)}"], notes
     docs = [h["_source"] for h in hits]
     problems += aggregate_run_problems(expected, docs)
     rows = [d for d in docs if d.get("hostName") != PROBE_HOST]
@@ -425,7 +433,7 @@ def check(http, forward, logs, sleep=time.sleep, clock=time.monotonic, timeout=3
     hits2, why = _wait(aggregated(len(expected2), 2), "the 404 bucket counting 2 lines", timeout,
                        clock, sleep)
     if why:
-        return problems + [f"{why}; {_transform_state(http, len(_aggregate(http)))}"], notes
+        return problems + [f"{why}; {_transform_state(http, len(_aggregate(http)), logs)}"], notes
     docs2 = [h["_source"] for h in hits2]
     problems += [f"pass 2: {p}" for p in aggregate_run_problems(expected2, docs2)]
     rows2 = [d for d in docs2 if d.get("hostName") != PROBE_HOST]
