@@ -297,6 +297,18 @@ def _found(http):
     return found, odd
 
 
+def _transform_state(http, found):
+    """Why a transform's wait ran out: its status and failure_reason, how many aggregate
+    documents there were, and the rest of its explain answer."""
+    status, explain = http("GET", f"/_plugins/_transform/{TRANSFORM_ID}/_explain")
+    meta = {}
+    if isinstance(explain, dict):
+        meta = explain.get(TRANSFORM_ID, {}).get("transform_metadata", {})
+    return (f"transform status {meta.get('status')!r}, failure_reason "
+            f"{meta.get('failure_reason')!r}; {found} aggregate document(s); explain "
+            f"({status}): {json.dumps(explain)[:3000]}")
+
+
 def _aggregate(http):
     http("POST", f"/{AGGREGATE}/_refresh")
     return _search(http, AGGREGATE)
@@ -384,8 +396,7 @@ def check(http, forward, logs, sleep=time.sleep, clock=time.monotonic, timeout=3
     hits, why = _wait(aggregated(len(expected)), f"the {len(expected)} buckets in {AGGREGATE}",
                       timeout, clock, sleep)
     if why:
-        status, explain = http("GET", f"/_plugins/_transform/{TRANSFORM_ID}/_explain")
-        return problems + [f"{why}; transform explain: {json.dumps(explain)[:500]}"], notes
+        return problems + [f"{why}; {_transform_state(http, len(_aggregate(http)))}"], notes
     docs = [h["_source"] for h in hits]
     problems += aggregate_run_problems(expected, docs)
     rows = [d for d in docs if d.get("hostName") != PROBE_HOST]
@@ -414,7 +425,7 @@ def check(http, forward, logs, sleep=time.sleep, clock=time.monotonic, timeout=3
     hits2, why = _wait(aggregated(len(expected2), 2), "the 404 bucket counting 2 lines", timeout,
                        clock, sleep)
     if why:
-        return problems + [why], notes
+        return problems + [f"{why}; {_transform_state(http, len(_aggregate(http)))}"], notes
     docs2 = [h["_source"] for h in hits2]
     problems += [f"pass 2: {p}" for p in aggregate_run_problems(expected2, docs2)]
     rows2 = [d for d in docs2 if d.get("hostName") != PROBE_HOST]
