@@ -1,0 +1,57 @@
+# Added to Polaris as a third `-f` file, after values-lakehouse.yaml (ADR-081, ADR-009): the Fluent
+# Bit sidecar as a native sidecar through upstream's `extraInitContainers` (restartPolicy Always),
+# and Quarkus's syslog handler pointed at it. Installing it is install/release.py's (L4); until
+# then nothing passes this file to helm.
+#
+# Upstream runs `tpl` over extraInitContainers, so no template syntax may appear here, and so the
+# values of this chart are repeated as literals: charts/test_polaris_log_sidecar.py keeps both
+# equal. Helm replaces lists across -f files, so extraVolumes holds values-lakehouse.yaml's claim
+# entry as well as the ConfigMap; the test requires every entry of that list to survive.
+#
+# UNVERIFIED (L3's gate proves them): that the image starts under this securityContext, that
+# Polaris 1.6.0 accepts the quarkus.log.syslog.* keys, and what its JSON carries.
+extraInitContainers:
+  - name: log-sidecar
+    image: fluent/fluent-bit:5.1.4@sha256:a9cc9627aeabb8bb33077ee85b6ec8c0fe40aff8e7000bb4e8cd924511fa626c
+    restartPolicy: Always
+    args: ["-c", "/fluent-bit/policy/fluent-bit.yaml"]
+    volumeMounts:
+      - name: log-sidecar-config
+        mountPath: /fluent-bit/policy
+        readOnly: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+
+extraVolumes:
+  - name: polaris-logs # as in values-lakehouse.yaml, read by the batch until L7
+    persistentVolumeClaim:
+      claimName: polaris-logs
+  - name: log-sidecar-config
+    configMap:
+      name: polaris-log-sidecar
+
+# Strings, like the file appender's. The file appender stays until L7 (ADR-081 Decision 7); so
+# does stdout.
+advancedConfig:
+  quarkus.log.syslog.enabled: "true"
+  quarkus.log.syslog.endpoint: "localhost:5140"
+  quarkus.log.syslog.protocol: "tcp"
+  quarkus.log.syslog.syslog-type: "rfc5424"
+  quarkus.log.syslog.use-counting-framing: "true"
+  quarkus.log.syslog.json.enabled: "true"
+  quarkus.log.syslog.max-length: "16384"
+  quarkus.log.syslog.async.enabled: "true"
+  quarkus.log.syslog.async.queue-length: "512"
+  quarkus.log.syslog.async.overflow: "discard"
