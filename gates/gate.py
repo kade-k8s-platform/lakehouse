@@ -2707,6 +2707,69 @@ def fluent_bit_pod(env, image, name):
                 "volumes": [volume]}}
 
 
+def forwarder_pod(env, image, name, configmap):
+    """Sends the records in `configmap` (key records.jsonl) to the main Fluent Bit stand-in
+    (ADR-081): Fluent Bit itself, in the pinned image, tails the file from its start, parses
+    each line as JSON, forwards it with the tag `logs` and waits for the acknowledgement, then
+    exits. A check pod in Polaris's namespace, so ADR-048's rows let it in."""
+    host = f"{standins.MAIN_FLUENT_BIT}.{env['NS_STANDINS']}.svc.cluster.local"
+    path = "/records/records.jsonl"
+    return {"apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": name, "namespace": env["NS_CATALOG_POLARIS"],
+                         "labels": {"app.kubernetes.io/name": "log-forwarder",
+                                    network.CHECK_LABEL: "true"}},
+            "spec": {
+                "restartPolicy": "Never",
+                "securityContext": {"runAsNonRoot": True, "runAsUser": READER_UID,
+                                    "runAsGroup": READER_UID,
+                                    "seccompProfile": {"type": "RuntimeDefault"}},
+                "containers": [{
+                    "name": "fluent-bit", "image": image,
+                    "command": ["/fluent-bit/bin/fluent-bit"],
+                    "args": ["-R", "/fluent-bit/etc/parsers.conf",
+                             "-i", "tail", "-p", f"path={path}", "-p", "read_from_head=true",
+                             "-p", "exit_on_eof=true", "-p", "parser=json", "-t", "logs",
+                             "-o", "forward", "-p", f"host={host}",
+                             "-p", f"port={standins.FORWARD_PORT}",
+                             "-p", "require_ack_response=true", "-m", "logs", "-f", "1"],
+                    "securityContext": {"allowPrivilegeEscalation": False,
+                                        "readOnlyRootFilesystem": True,
+                                        "capabilities": {"drop": ["ALL"]}},
+                    "volumeMounts": [{"name": "records", "mountPath": path,
+                                      "subPath": "records.jsonl", "readOnly": True}]}],
+                "volumes": [{"name": "records", "configMap": {"name": configmap}}]}}
+
+
+def logs_records_configmap(env, name, text):
+    """The ConfigMap `forwarder_pod` mounts: `text` as records.jsonl."""
+    return {"apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": {"name": name, "namespace": env["NS_CATALOG_POLARIS"]},
+            "data": {"records.jsonl": text}}
+
+
+def logs_opensearch_argv(env, method, path):
+    """kubectl exec into the log OpenSearch stand-in with curl: the request body on stdin, the
+    status code on the last line of stdout."""
+    return ["kubectl", "--context", CONTEXT, "-n", env["NS_STANDINS"], "exec", "-i",
+            f"deploy/{standins.LOGS_OPENSEARCH}", "--", "curl", "-sS", "-X", method,
+            "-H", "Content-Type: application/json", "--data-binary", "@-",
+            "-w", "\n%{http_code}",
+            f"http://127.0.0.1:{standins.LOGS_OPENSEARCH_PORT}{path}"]
+
+
+def parse_http_answer(text):
+    """curl's `body\nstatus` -> (status, the body as JSON, {} when it is empty)."""
+    body, _, status = text.rpartition("\n")
+    return int(status), (json.loads(body) if body.strip() else {})
+
+
+def logs_opensearch_http(env, method, path, body=None):
+    """One request to the log OpenSearch stand-in -> (status, JSON). A curl that fails to
+    connect stops the gate."""
+    return parse_http_answer(output(logs_opensearch_argv(env, method, path),
+                                    json.dumps(body) if body is not None else ""))
+
+
 def logs_problems(sent, pods, events, before, after, records):
     """What the reader saw against what was sent (ADR-036, contract v2): every line and row
     holds the contract, every file was read whole, every summary's books balance, each kept

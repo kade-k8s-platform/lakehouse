@@ -180,8 +180,8 @@ class Buckets(unittest.TestCase):
         changed = copy.deepcopy(TRANSFORM)
         changed["transform"]["groups"] = [
             g for g in changed["transform"]["groups"]
-            if g.get("terms", {}).get("source_field") != "resource"]
-        self.assertLess(len(logs_v3.expected_buckets(kept(), changed)), 14)
+            if "date_histogram" in g or g["terms"]["source_field"] == "hostName"]
+        self.assertEqual(len(logs_v3.expected_buckets(kept(), changed)), 1)
 
     def test_the_extra_404_joins_its_bucket(self):
         buckets = logs_v3.expected_buckets(logs_v3.pass2_records(kept()), TRANSFORM)
