@@ -19,7 +19,6 @@ import re
 import sys
 import unittest
 
-import lupa
 from lupa import luajit21
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -54,7 +53,7 @@ with open(os.path.join(ROOT, "docs", "contracts", "polaris-logs-v3-routing.json"
 def to_python(value):
     """A Lua value as Python: a table with keys 1..n is a list, any other (an empty one too) a
     dict; a number with no fraction an int, which is how the contract writes http_status."""
-    if lupa.lua_type(value) == "table":
+    if luajit21.lua_type(value) == "table":
         items = list(value.items())
         if items and all(isinstance(k, (int, float)) for k, _ in items):
             keys = sorted(int(k) for k, _ in items)
@@ -338,8 +337,10 @@ class Stateless(Base):
         self.assertEqual(got, want)
 
     def test_no_clock_and_no_io_in_the_source(self):
-        for word in ("os.time", "os.clock", "os.date", "io.", "require"):
-            self.assertNotIn(word, self.f.source, word)
+        code = re.sub(r"--[^\n]*", "", self.f.source)  # comments
+        code = re.sub(r'"[^"\n]*"|\'[^\'\n]*\'', '""', code)  # strings, e.g. the logger io.quarkus
+        for word in (r"\bos\.", r"\bio\.", r"\brequire\b", r"\bdofile\b", r"\bloadfile\b"):
+            self.assertIsNone(re.search(word, code), word)
 
     def test_a_line_given_twice_gets_the_same_event_id(self):
         rec = access("PUT", f"{MGMT}/principals/p", 200)
