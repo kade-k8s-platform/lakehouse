@@ -250,3 +250,172 @@ def probe_outcome(docs):
     if all(d.get("resource") is None for d in probes):
         return "a bucket without resource"
     return f"a bucket with resource {probes[0].get('resource')!r}"
+
+
+def _wait(poll, what, timeout, clock, sleep, step=3):
+    """poll() every `step` s until it gives a value -> (value, None); (None, problem) after
+    `timeout` s."""
+    end = clock() + timeout
+    while True:
+        result = poll()
+        if result:
+            return result, None
+        if clock() > end:
+            return None, f"{what}: not done after {timeout} s"
+        sleep(step)
+
+
+def _clean(http):
+    """A re-run on the same cluster: whatever an earlier run left, gone (answers ignored)."""
+    http("POST", f"/_plugins/_transform/{TRANSFORM_ID}/_stop")
+    http("DELETE", f"/_plugins/_transform/{TRANSFORM_ID}")
+    for pattern in ("polaris-logs-candidate-*", "polaris-logs-error-*", AGGREGATE):
+        http("DELETE", f"/{pattern}")
+    for policy in POLICY_IDS.values():
+        http("DELETE", f"/_plugins/_ism/policies/{policy}")
+
+
+def _search(http, pattern):
+    status, body = http("GET", f"/{pattern}/_search",
+                        {"size": 1000, "query": {"match_all": {}}})
+    return [h for h in body.get("hits", {}).get("hits", [])] if status == 200 else []
+
+
+def _found(http):
+    """The line indices' documents -> ({"candidate": [...], "error": [...]}, ids differing from
+    event_id)."""
+    found, odd = {}, []
+    for kind in ("candidate", "error"):
+        hits = _search(http, f"polaris-logs-{kind}-*")
+        found[kind] = [h["_source"] for h in hits]
+        odd += [h["_id"] for h in hits if h["_id"] != h["_source"].get("event_id")]
+    return found, odd
+
+
+def _aggregate(http):
+    http("POST", f"/{AGGREGATE}/_refresh")
+    return _search(http, AGGREGATE)
+
+
+def check(http, forward, logs, sleep=time.sleep, clock=time.monotonic, timeout=300,
+          ism_timeout=120, read_timeout=60):
+    """The check of the module's docstring -> (problems, notes). `http(method, path, body)` ->
+    (status, JSON) for the OpenSearch stand-in; `forward(text)` sends `text`, JSON lines, through
+    the main Fluent Bit stand-in and gives the forwarder pod's phase; `logs(name)` the log of the
+    stand-in's Deployment `name`. A step whose result the rest needs ends the check."""
+    problems, notes = [], []
+    kept = [e["output"] for e in contract.kept_examples()]
+    routing, transform = contract.routing(), contract.transform()
+    _clean(http)
+    for kind, policy in contract.ism_policies().items():
+        status, body = http("PUT", f"/_plugins/_ism/policies/{POLICY_IDS[kind]}", policy)
+        if status >= 300:
+            return [f"ISM policy {POLICY_IDS[kind]} refused ({status}): {body}"], notes
+    for kind, template in contract.templates().items():
+        status, body = http("PUT", f"/_index_template/polaris-logs-{kind}", template)
+        if status >= 300:
+            return [f"index template polaris-logs-{kind} refused ({status}): {body}"], notes
+
+    def send(records, what):
+        phase = forward(records_jsonl(records))
+        if phase != "Succeeded":
+            return [f"{what}: the forwarder ended {phase}"]
+        http("POST", "/_refresh")
+        return []
+
+    def have(total):
+        def poll():
+            found, odd = _found(http)
+            return (found, odd) if sum(map(len, found.values())) >= total else None
+        return poll
+
+    problems += send(kept, "pass 1")
+    if problems:
+        return problems, notes
+    got, why = _wait(have(len(kept)), "the 15 records in the line indices", read_timeout,
+                     clock, sleep)
+    if why:
+        return [why], notes
+    found, odd = got
+    problems += routing_problems(kept, found) + document_problems(found)
+    problems += [f"document _id {i} is not its event_id" for i in odd]
+    status, aliased = http("GET", f"/_alias/{ALIAS}")
+    names = sorted(aliased) if status == 200 else []
+    if not (any(n.startswith("polaris-logs-candidate-") for n in names)
+            and any(n.startswith("polaris-logs-error-") for n in names)) or AGGREGATE in names:
+        problems.append(f"alias {ALIAS} holds {names}: expected a candidate and an error index "
+                        f"and not {AGGREGATE}")
+    notes.append(f"alias {ALIAS} holds {names}")
+
+    def attached():
+        status, explain = http("GET", "/_plugins/_ism/explain/polaris-logs-*")
+        return explain if status == 200 and not ism_problems(explain, POLICY_IDS) else None
+    explain, why = _wait(attached, "ISM attached to both line indices", ism_timeout, clock,
+                         sleep)
+    if why:
+        status, last = http("GET", "/_plugins/_ism/explain/polaris-logs-*")
+        problems += [why] + ism_problems(last, POLICY_IDS)
+    status, body = http("PUT", f"/_plugins/_transform/{TRANSFORM_ID}", transform)
+    if status >= 300:
+        reason = body.get("error", {}).get("reason", body) if isinstance(body, dict) else body
+        return problems + [f"the transform was refused ({status}): {reason}"], notes
+    interval = transform["transform"]["schedule"]["interval"]
+    notes.append(f"transform accepted with interval {interval['period']} {interval['unit']}")
+    expected = expected_buckets(kept, transform)
+
+    def aggregated(want, bucket_lines=None):
+        def poll():
+            hits = _aggregate(http)
+            docs = [h["_source"] for h in hits if h["_source"].get("hostName") != PROBE_HOST]
+            if len(docs) < want:
+                return None
+            if bucket_lines and not any(d.get("status_class") == "404"
+                                        and d.get("lines") == bucket_lines for d in docs):
+                return None
+            return hits
+        return poll
+    hits, why = _wait(aggregated(len(expected)), f"the {len(expected)} buckets in {AGGREGATE}",
+                      timeout, clock, sleep)
+    if why:
+        status, explain = http("GET", f"/_plugins/_transform/{TRANSFORM_ID}/_explain")
+        return problems + [f"{why}; transform explain: {json.dumps(explain)[:500]}"], notes
+    docs = [h["_source"] for h in hits]
+    problems += aggregate_run_problems(expected, docs)
+    rows = [d for d in docs if d.get("hostName") != PROBE_HOST]
+    expected_counters = counters(kept, routing)
+    if counters(rows, routing) != expected_counters:
+        problems.append(f"counters differ: aggregate {counters(rows, routing)}, "
+                        f"records {expected_counters}")
+    ids = {h["_id"] for h in hits}
+    sample = sorted(ids)[0] if ids else None
+    types = {k: type(docs[0].get(k)).__name__ for k in TIME_FIELDS}
+    notes.append(f"time fields: {types}; response_bytes: {docs[0].get('response_bytes')!r}")
+
+    again = pass2_records(kept)
+    problems += send(again, "pass 2")
+    if problems and problems[-1].startswith("pass 2"):
+        return problems, notes
+    got, why = _wait(have(len(again)), "the 17 records in the line indices", read_timeout,
+                     clock, sleep)
+    if why:
+        return problems + [why], notes
+    found2, _ = got
+    problems += [f"pass 2: {p}" for p in routing_problems(again, found2)]
+    expected2 = expected_buckets(again, transform)
+    hits2, why = _wait(aggregated(len(expected2), 2), "the 404 bucket counting 2 lines", timeout,
+                       clock, sleep)
+    if why:
+        return problems + [why], notes
+    docs2 = [h["_source"] for h in hits2]
+    problems += [f"pass 2: {p}" for p in aggregate_run_problems(expected2, docs2)]
+    lost = ids - {h["_id"] for h in hits2}
+    if lost:
+        problems.append(f"pass 2: bucket _id(s) {sorted(lost)} are gone: a bucket's _id is not "
+                        f"stable")
+    notes.append(f"sample bucket _id {sample}; "
+                 f"{'the same ids after the second pass' if not lost else 'ids changed'}")
+    notes.append(f"probe (a line without resource): {probe_outcome(docs2)}")
+    for name in ("logs-opensearch", "main-fluent-bit-standin"):
+        errors = [line for line in logs(name).splitlines() if "[error]" in line.lower()]
+        problems += [f"{name}: {line}" for line in errors[:5]]
+    return problems, notes

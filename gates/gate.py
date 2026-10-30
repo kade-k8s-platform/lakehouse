@@ -182,7 +182,12 @@
                   policy's rules on Polaris's own lines: the 404s dropped with their
                   application lines (3'), the 400s and the catalog made kept with theirs (2b),
                   each commit counted on its table's row (2a); both pods' files read; the second
-                  run must change no file.
+                  run must change no file. Then contract v3 (ADR-081, gates/logs_v3.py): the
+                  contract's templates, ISM policies and transform go into the OpenSearch
+                  stand-in, the 15 records the sidecar keeps go through the main Fluent Bit
+                  stand-in (Fluent Bit itself as the forward client), and their routing, shapes,
+                  ISM's attachment and one transform's aggregate are checked, then a second pass
+                  (the same records, one more 404, a line without a group field).
   check-console   runs gates/console/check.py (on stdin) in a short-lived pod on the pinned
                   Python image: the console answers and points the browser at Polaris, and
                   gate_maintainer signs in as the browser does, from the console's origin,
@@ -255,6 +260,7 @@ sys.path.insert(0, os.path.join(ROOT, "install"))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import contract  # noqa: E402
 import init_env  # noqa: E402
+import logs_v3  # noqa: E402
 import metrics  # noqa: E402
 import network  # noqa: E402
 import release  # noqa: E402
@@ -3014,8 +3020,41 @@ def check_logs(env, pins):
     run(kubectl + ["delete", f"pod/{name}", "--wait=false"])
     if phase != "Succeeded":
         return [f"the stand-in Fluent Bit ended {phase}"], []
-    return logs_problems(sent, [name for name, _ in targets], events, listings[0],
-                         listings[1], records)
+    problems, notes = logs_problems(sent, [name for name, _ in targets], events, listings[0],
+                                    listings[1], records)
+    v3_problems, v3_notes = logs_v3_check(env, pins)
+    return problems + v3_problems, notes + v3_notes
+
+
+def logs_v3_check(env, pins):
+    """Contract v3 (ADR-081) in the stand-ins: gates/logs_v3.py's check, with this module's
+    cluster access. Returns (problems, notes)."""
+    ns, pid = env["NS_CATALOG_POLARIS"], os.getpid()
+    kubectl = ["kubectl", "--context", CONTEXT, "-n", ns]
+    image = pins["standin_images"]["fluent_bit"]["image"]
+    sent = []
+
+    def forward(text):
+        name = f"log-forwarder-{pid}-{len(sent) + 1}"
+        sent.append(name)
+        configmap = logs_records_configmap(env, name, text)
+        pod = forwarder_pod(env, image, name, name)
+        run(kubectl + ["apply", "-f", "-"], json.dumps({"apiVersion": "v1", "kind": "List",
+                                                         "items": [configmap, pod]}))
+        phase = wait_for(kubectl + ["get", f"pod/{name}", "-o", "json"],
+                         lambda p: p.get("status", {}).get("phase") in ("Succeeded", "Failed")
+                         and p["status"]["phase"], f"pod/{name}")
+        print(output(kubectl + ["logs", f"pod/{name}"]), end="", flush=True)
+        run(kubectl + ["delete", f"pod/{name}", f"configmap/{name}", "--wait=false"])
+        return phase
+
+    def logs(name):
+        return output(["kubectl", "--context", CONTEXT, "-n", env["NS_STANDINS"], "logs",
+                       f"deploy/{name}", "--tail=-1"])
+
+    return logs_v3.check(lambda method, path, body=None: logs_opensearch_http(env, method, path,
+                                                                              body),
+                         forward, logs)
 
 
 def up(pins, kind_config=KIND_CONFIG):
