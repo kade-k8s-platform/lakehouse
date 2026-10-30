@@ -181,6 +181,9 @@
                   application lines (3'), the 400s and the catalog made kept with theirs (2b),
                   each commit counted on its table's row (2a); both pods' files read; the second
                   run must change no file.
+                  Then gates/syslog_probe.py runs Polaris 1.6.0's syslog proofs (ADR-081): a
+                  clone of the release's Deployment with the syslog handler on, against a plain
+                  receiver and against Fluent Bit's syslog input; see that module.
   check-console   runs gates/console/check.py (on stdin) in a short-lived pod on the pinned
                   Python image: the console answers and points the browser at Polaris, and
                   gate_maintainer signs in as the browser does, from the console's origin,
@@ -259,6 +262,7 @@ import release  # noqa: E402
 import release_tag  # noqa: E402
 import seed  # noqa: E402
 import standins  # noqa: E402
+import syslog_probe  # noqa: E402
 import traffic  # noqa: E402
 
 CLUSTER = "lakehouse-gate"
@@ -3086,7 +3090,10 @@ def main(argv):
             run(command)
         return 0
     if argv[1:] == ["check-logs"]:
-        problems, notes = check_logs(release.load_env(ROOT, os.environ), pins)
+        env = release.load_env(ROOT, os.environ)
+        problems, notes = check_logs(env, pins)
+        more_problems, more_notes = syslog_probe.run(env, pins, CONTEXT, run, output)
+        problems, notes = problems + more_problems, notes + more_notes
         for line in notes + problems:
             print(line, flush=True)
         return 1 if problems else 0
