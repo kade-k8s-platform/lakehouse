@@ -243,7 +243,8 @@ class NetworkPolicies(unittest.TestCase):
 
     def test_every_policy_restricts_ingress_only(self):
         self.assertEqual(sorted(self.policies),
-                         ["default-deny-ingress", "opa", "prometheus", "recorder", "seaweedfs"])
+                         ["default-deny-ingress", "logs-opensearch", "main-fluent-bit-standin",
+                          "opa", "prometheus", "recorder", "seaweedfs"])
         for name, spec in self.policies.items():
             self.assertEqual(spec["policyTypes"], ["Ingress"], name)
 
@@ -340,7 +341,13 @@ class Direct(unittest.TestCase):
     def test_only_the_policies_and_the_two_containers_differ(self):
         default = objects()
         direct = objects(direct=True, cpu_limits=self.LIMITS)
-        self.assertEqual(sorted(default), sorted(direct))
+        # A stress install leaves the log stand-ins out (ADR-053 §4); test_standins_logs pins it.
+        log_standins = {key for key in default
+                        if key[1] in ("logs-opensearch", "main-fluent-bit-standin",
+                                      "main-fluent-bit-config")}
+        self.assertEqual(sorted(set(default) - set(direct)), sorted(log_standins))
+        self.assertEqual(set(direct) - set(default), set())
+        default = {k: v for k, v in default.items() if k not in log_standins}
         changed = sorted(key for key in default if default[key] != direct[key])
         self.assertEqual(changed, [("Deployment", "opa"), ("Deployment", "seaweedfs"),
                                    ("NetworkPolicy", "opa"), ("NetworkPolicy", "seaweedfs")])

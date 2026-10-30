@@ -28,8 +28,11 @@
                   them (ADR-043, ADR-066). Never
                   part of a release; the install's endpoint check needs them on the gate.
                   With them the recorder (ADR-034), with a TLS certificate made here, and
-                  Prometheus loading docs/contracts/polaris-prometheus-scrape.yaml (ADR-046).
-                  `standins --direct`: SeaweedFS and OPA also take connections from Polaris's
+                  Prometheus loading docs/contracts/polaris-prometheus-scrape.yaml (ADR-046), and
+                  the log stand-ins (ADR-081): OpenSearch 3.6.0 (`logs-opensearch`) and a main
+                  Fluent Bit (`main-fluent-bit-standin`, forward on 24224).
+                  `standins --direct` leaves the log stand-ins out; SeaweedFS and OPA also take
+                  connections from Polaris's namespace; SeaweedFS and OPA also take connections from Polaris's
                   namespace and run under the CPU limits in gates/stress/config.json, or in
                   the overlay STRESS_OVERLAY names (Tier D's capacity.json, ADR-053 §7).
   check-standins  runs gates/check_standins.sh in a short-lived curl pod in Polaris's namespace:
@@ -537,9 +540,9 @@ def write_gate_env(path, template_text, direct=False):
     init_env.write_env(path, gate_env(template_text, direct=direct))
 
 
-def standins_commands(env, manifest):
+def standins_commands(env, manifest, direct=False):
     """(argv, stdin) in order: apply the stand-ins' List `manifest`, wait until all four are
-    ready, then create each backup bucket, Polaris's then Datahub's, with SeaweedFS's shell
+    ready (and the log stand-ins, unless `direct`: a stress install leaves them out), then create each backup bucket, Polaris's then Datahub's, with SeaweedFS's shell
     (`weed mini -bucket` makes only the warehouse's) and check that its filer lists it (ADR-043,
     ADR-066 §3)."""
     ns = ["kubectl", "--context", CONTEXT, "-n", env["NS_STANDINS"]]
@@ -547,7 +550,10 @@ def standins_commands(env, manifest):
         (["kubectl", "--context", CONTEXT, "apply", "--server-side", "--field-manager=gate",
           "-f", "-"], manifest),
         (ns + ["rollout", "status", "deployment/seaweedfs", "deployment/opa",
-               "deployment/recorder", "deployment/prometheus", "--timeout=5m"], None),
+               "deployment/recorder", "deployment/prometheus",
+               *([] if direct else [f"deployment/{standins.LOGS_OPENSEARCH}",
+                                    f"deployment/{standins.MAIN_FLUENT_BIT}"]),
+               "--timeout=5m"], None),
     ]
     for bucket in (env["POLARIS_BACKUP_BUCKET"], env["DATAHUB_BACKUP_BUCKET"]):
         commands += [
@@ -2993,7 +2999,7 @@ def main(argv):
             manifest = json.dumps(standins.manifests(
                 env, pins, f.read(), code.read(), recorder_certificate(env, d), config,
                 direct=direct, cpu_limits=stress_standin_cpu() if direct else None))
-        (apply, _), *rest = standins_commands(env, manifest)
+        (apply, _), *rest = standins_commands(env, manifest, direct=direct)
         print("+ " + " ".join(apply) + "  (the stand-ins' List on stdin)", flush=True)
         subprocess.run(apply, input=manifest, text=True, check=True)
         for command, stdin in rest:

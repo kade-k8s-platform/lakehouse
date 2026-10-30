@@ -22,6 +22,11 @@ never part of a release. Built here as one v1 List that `gate.py standins` appli
   METRICS_NAMESPACE_LABEL names, so the stand-in crosses the release's own policies as the
   observability team's scraper would.
 
+- **Log stand-ins** (ADR-081, ADR-031): OpenSearch (`logs-opensearch`, the pinned full image, so its
+  index-management plugin holds the contract's ISM policies and transform) and a main Fluent
+  Bit (`main-fluent-bit-standin`, a `forward` input on 24224, `rewrite_tag` by `index_class`,
+  two `opensearch` outputs, memory only) from the ConfigMap `main-fluent-bit-config`.
+
 Ingress to NS_STANDINS is denied by default; the recorder takes connections from Polaris's
 namespace, SeaweedFS, OPA and Prometheus from the gate's check pods, SeaweedFS and OPA also
 from the recorder (ADR-048 §3, ADR-046 §4).
@@ -29,7 +34,8 @@ from the recorder (ADR-048 §3, ADR-046 §4).
 **Direct** (`manifests(..., direct=True)`, ADR-053 §4): for a stress install, which measures
 Polaris and not the recorder. SeaweedFS and OPA also take connections from Polaris's namespace,
 and each runs under the CPU limit given, so a stress run can tell when one of them is the limit.
-Everything else is the List smoke applies.
+Everything else is the List smoke applies, but the log stand-ins: a stress run measures Polaris
+and leaves them out (ADR-053 §4).
 
 Images are pinned by digest in gates/pins.json (`standin_images`). Everything lives in
 `NS_STANDINS` but Prometheus's Role and RoleBinding, in Polaris's namespace; credentials reach
@@ -46,6 +52,11 @@ RECORDER_READY_FILE = "/tmp/recorder-ready"
 FILER_PORT = 8888
 PG_PORT = 5432
 PROMETHEUS_PORT = 9090
+LOGS_OPENSEARCH_PORT = 9200
+FORWARD_PORT = 24224
+LOGS_OPENSEARCH = "logs-opensearch"
+MAIN_FLUENT_BIT = "main-fluent-bit-standin"
+MAIN_FLUENT_BIT_CONFIG = "main-fluent-bit-config"
 # The label every pod the gate starts to check things carries: in Polaris's namespace, those
 # pods may reach the stand-ins directly (ADR-034, ADR-048 §3).
 CHECK_LABEL = "lakehouse-gate/check"
@@ -135,7 +146,106 @@ def network_policies(env, direct=False):
             "ports": [{"protocol": "TCP", "port": port}], "from": sources}]))
     policies.append(_policy("prometheus", ns, _app("prometheus")["podSelector"], [{
         "ports": [{"protocol": "TCP", "port": PROMETHEUS_PORT}], "from": [checks]}]))
+    if not direct:
+        policies += [
+            _policy(LOGS_OPENSEARCH, ns, _app(LOGS_OPENSEARCH)["podSelector"], [{
+                "ports": [{"protocol": "TCP", "port": LOGS_OPENSEARCH_PORT}],
+                "from": [_app(MAIN_FLUENT_BIT), checks]}]),
+            _policy(MAIN_FLUENT_BIT, ns, _app(MAIN_FLUENT_BIT)["podSelector"], [{
+                "ports": [{"protocol": "TCP", "port": FORWARD_PORT}], "from": [checks]}])]
     return policies
+
+
+def main_fluent_bit_config(env):
+    """The main Fluent Bit stand-in's classic-format config (ADR-081 Decision 3): records come
+    in on `forward` with the tag `logs`, `rewrite_tag` routes them by `index_class` to
+    `polaris.candidate` or `polaris.error`, and each tag goes to its own daily index in
+    logs-opensearch with `event_id` as the document id. A record of neither class reaches stdout.
+    Memory only: no `storage.*` key. The key spellings are Fluent Bit's documentation; smoke
+    proves them."""
+    return f"""[SERVICE]
+    Flush 1
+    Log_Level info
+
+[INPUT]
+    Name forward
+    Listen 0.0.0.0
+    Port {FORWARD_PORT}
+
+[FILTER]
+    Name rewrite_tag
+    Match logs
+    Rule $index_class ^candidate$ polaris.candidate false
+    Rule $index_class ^error$ polaris.error false
+
+[OUTPUT]
+    Name opensearch
+    Match polaris.candidate
+    Host {LOGS_OPENSEARCH}
+    Port {LOGS_OPENSEARCH_PORT}
+    Logstash_Format On
+    Logstash_Prefix polaris-logs-candidate
+    Logstash_DateFormat %Y.%m.%d
+    Id_Key event_id
+    Suppress_Type_Name On
+    Trace_Error On
+    Retry_Limit 5
+
+[OUTPUT]
+    Name opensearch
+    Match polaris.error
+    Host {LOGS_OPENSEARCH}
+    Port {LOGS_OPENSEARCH_PORT}
+    Logstash_Format On
+    Logstash_Prefix polaris-logs-error
+    Logstash_DateFormat %Y.%m.%d
+    Id_Key event_id
+    Suppress_Type_Name On
+    Trace_Error On
+    Retry_Limit 5
+
+[OUTPUT]
+    Name stdout
+    Match logs
+"""
+
+
+def log_standin_objects(env, images):
+    """OpenSearch and the main Fluent Bit, their Services and the Fluent Bit's config."""
+    ns = env["NS_STANDINS"]
+    opensearch = {
+        "image": images["opensearch"]["image"],
+        "env": [{"name": "discovery.type", "value": "single-node"},
+                {"name": "DISABLE_SECURITY_PLUGIN", "value": "true"},
+                {"name": "DISABLE_INSTALL_DEMO_CONFIG", "value": "true"},
+                {"name": "OPENSEARCH_JAVA_OPTS", "value": "-Xms512m -Xmx512m"}],
+        "ports": [{"name": "http", "containerPort": LOGS_OPENSEARCH_PORT}],
+        "readinessProbe": {"httpGet": {
+            "path": "/_cluster/health?wait_for_status=yellow&timeout=5s",
+            "port": LOGS_OPENSEARCH_PORT}, "periodSeconds": 5, "failureThreshold": 60},
+        "resources": {"requests": {"memory": "1Gi"}, "limits": {"memory": "1536Mi"}},
+        "volumeMounts": [{"name": "data", "mountPath": "/usr/share/opensearch/data"}],
+    }
+    fluent_bit = {
+        "image": images["fluent_bit"]["image"],
+        "args": ["-c", "/fluent-bit/etc/fluent-bit.conf"],
+        "ports": [{"name": "forward", "containerPort": FORWARD_PORT}],
+        "readinessProbe": {"tcpSocket": {"port": FORWARD_PORT}, "periodSeconds": 5},
+        "resources": {"requests": {"cpu": "50m", "memory": "64Mi"},
+                      "limits": {"memory": "256Mi"}},
+        "volumeMounts": [{"name": "config", "mountPath": "/fluent-bit/etc/fluent-bit.conf",
+                          "subPath": "fluent-bit.conf", "readOnly": True}],
+    }
+    return [
+        _deployment(LOGS_OPENSEARCH, ns, opensearch, [{"name": "data", "emptyDir": {}}]),
+        _service(LOGS_OPENSEARCH, ns, LOGS_OPENSEARCH_PORT),
+        {"apiVersion": "v1", "kind": "ConfigMap",
+         "metadata": _meta(MAIN_FLUENT_BIT_CONFIG, ns),
+         "data": {"fluent-bit.conf": main_fluent_bit_config(env)}},
+        _deployment(MAIN_FLUENT_BIT, ns, fluent_bit,
+                    [{"name": "config", "configMap": {"name": MAIN_FLUENT_BIT_CONFIG}}]),
+        _service(MAIN_FLUENT_BIT, ns, FORWARD_PORT),
+    ]
 
 
 def _namespace(env):
@@ -189,7 +299,7 @@ def manifests(env, pins, policy_text, recorder_code, tls, prometheus_config, dir
     """A v1 List: the Namespace, then the Secrets, ConfigMaps, Deployments and Services.
     `tls` is the recorder's (certificate, key), PEM; `prometheus_config` the stand-in's
     prometheus.yml (gates/metrics.py). With `direct`, `cpu_limits` maps each name in DIRECT to
-    its CPU limit (ADR-053 §4)."""
+    its CPU limit (ADR-053 §4). `direct` also leaves out the log stand-ins."""
     if direct and set(cpu_limits or ()) != {name for name, _ in DIRECT}:
         raise ValueError(f"direct needs a CPU limit for each of {[n for n, _ in DIRECT]}")
     ns = env["NS_STANDINS"]
@@ -288,5 +398,6 @@ def manifests(env, pins, policy_text, recorder_code, tls, prometheus_config, dir
             {"name": "tls", "secret": {"secretName": "recorder-tls"}}]),
         recorder_service,
         *prometheus_objects(env, images["prometheus"]["image"], prometheus_config),
+        *([] if direct else log_standin_objects(env, images)),
         *network_policies(env, direct),
     ]}
