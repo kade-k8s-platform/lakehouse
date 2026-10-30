@@ -139,6 +139,14 @@ class Clone(unittest.TestCase):
             "containers"][0]["env"][2])
         self.assertEqual([e["name"] for e in env].count("JAVA_OPTS"), 1)
 
+    def test_a_log_sidecar_of_the_release_is_not_cloned(self):
+        src = source()
+        src["spec"]["template"]["spec"]["initContainers"] = [
+            {"name": "log-sidecar", "image": "x"}, {"name": "wait", "image": "y"}]
+        dep = probe.probe_deployment(src, "p", 2048, self.container, self.volumes)
+        self.assertEqual([c["name"] for c in dep["spec"]["template"]["spec"]["initContainers"]],
+                         ["receiver", "wait"])
+
     def test_the_receiver_is_a_native_sidecar_with_a_ready_probe(self):
         (init,) = self.pod["initContainers"]
         self.assertEqual(init["name"], "receiver")
