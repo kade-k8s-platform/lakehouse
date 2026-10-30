@@ -2,7 +2,7 @@
 the pinned Python image, fed on stdin: `python3 - SPEC`, SPEC a JSON object
 
   {"url": "http://<pod ip>:8181", "realm": "POLARIS", "pid": N, "leg": "a",
-   "phases": [{"phase": "base", "count": 1000, "workers": 8, "pad": 1500, "token": 0},
+   "phases": [{"phase": "base", "count": 1000, "workers": 8, "pad": 500, "token": 0},
               {"phase": "long", "lengths": [3000]}]}
 
 Each phase sends `count` GETs of /api/management/v1/catalogs (the first `token` of them with

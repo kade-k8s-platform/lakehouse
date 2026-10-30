@@ -107,9 +107,11 @@ def parse_syslog(frame):
         raise ValueError(f"not an RFC 5424 message: {text[:60]!r}")
     pri, version, timestamp, host, app, procid, msgid, sd, msg = match.groups()
     nil = lambda value: None if value == "-" else value  # noqa: E731
+    msg = msg or ""
     return {"pri": int(pri), "version": int(version), "timestamp": nil(timestamp),
             "host": nil(host), "app": nil(app), "procid": nil(procid), "msgid": nil(msgid),
-            "sd": nil(sd), "msg": (msg or "").removeprefix("﻿")}
+            "sd": nil(sd), "msg": (msg or "").removeprefix("\ufeff"),
+            "bom": (msg or "").startswith("\ufeff")}
 
 
 def _type(value):
@@ -128,6 +130,7 @@ def record_of(n, frame, framing_ok=True):
         record.update(json_ok=False, error=str(error), head=text[:160], tail=text[-120:])
         return record
     msg = envelope.pop("msg")
+    record["bom"] = envelope["bom"]
     for key in ("pri", "version", "host", "app", "procid"):
         record[key] = envelope[key]
     record.update(msg_len=len(msg.encode("utf-8")), head=msg[:160], tail=msg[-120:])

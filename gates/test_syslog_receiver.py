@@ -85,6 +85,8 @@ class ParseSyslog(unittest.TestCase):
     def test_a_byte_order_mark_is_not_part_of_the_message(self):
         got = receiver.parse_syslog(b'<14>1 t h a 1 - - \xef\xbb\xbf{"a":1}')
         self.assertEqual(got["msg"], '{"a":1}')
+        self.assertTrue(got["bom"])
+        self.assertFalse(receiver.parse_syslog(frame_of("{}"))["bom"])
 
     def test_a_frame_not_starting_with_a_bracket_is_an_error(self):
         with self.assertRaises(ValueError):

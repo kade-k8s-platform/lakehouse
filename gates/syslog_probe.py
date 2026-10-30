@@ -308,7 +308,9 @@ def check_started(records, polaris_log):
         return (["the handler did not start with the keys (or the names are wrong): no frame "
                  "reached the receiver"], [])
     first, problems = records[0], []
-    notes = [f"first frame: pri {first.get('pri')}, version {first.get('version')}, host "
+    boms = sum(1 for r in records if r.get("bom"))
+    notes = [f"{boms} of {len(records)} messages start with a UTF-8 BOM (RFC 5424 allows one)",
+             f"first frame: pri {first.get('pri')}, version {first.get('version')}, host "
              f"{first.get('host')}, app {first.get('app')}, procid {first.get('procid')}, "
              f"declared {first.get('declared')}, msg_len {first.get('msg_len')}",
              f"first frame head: {first.get('head')}", f"first frame tail: {first.get('tail')}"]
@@ -485,7 +487,7 @@ def _body(record):
         k for k, v in record.items() if isinstance(v, str) and v.startswith("{")]
     for key in keys:
         try:
-            body = json.loads(record[key])
+            body = json.loads(record[key].removeprefix("\ufeff"))
         except (TypeError, ValueError):
             continue
         if isinstance(body, dict):
@@ -512,7 +514,11 @@ def check_fluent_bit(records, sent):
         count = len(found.get(request_id, []))
         if count != 1:
             problems.append(f"{request_id} is in {count} of Fluent Bit's records, not 1")
+    boms = sum(1 for r in records if any(isinstance(v, str) and v.startswith("\ufeff")
+                                         for v in r.values()))
     notes = [f"Fluent Bit wrote {len(records)} records; the body is in {sorted(body_keys)}",
+             f"{boms} record(s) keep the message's UTF-8 BOM in front of the JSON (the parser "
+             "does not strip it; a JSON parser filter would have to)",
              "record keys: " + ", ".join(sorted(records[0])) if records else "no record"]
     return problems, notes
 
@@ -520,7 +526,9 @@ def check_fluent_bit(records, sent):
 # The driver.
 
 NORMAL = {"phase": "normal", "count": 80, "workers": 1, "token": 20, "pad": 0}
-BASELINE = {"phase": "base", "count": 1000, "workers": 8, "pad": 1500}
+# The pad keeps an access line under the leg's max-length of 2048 (1500 did not: the baseline's
+# lines were cut, measured on the smoke gate 2026-10-30).
+BASELINE = {"phase": "base", "count": 1000, "workers": 8, "pad": 500}
 STALL_ROUNDS = (2000, 4000, 8000)
 LONG_A, LONG_B = (3000,), (9000, 19000)
 MAX_LENGTH = {"a": 2048, "b": 16384}

@@ -356,6 +356,13 @@ class Checks(unittest.TestCase):
         bad["message"] = "{not json"
         self.assertNotEqual(probe.check_fluent_bit([line(0), bad], sent)[0], [])
 
+    def test_fluent_bit_body_after_a_bom_parses_and_is_reported(self):
+        sent = ["syslog-1-b-normal-0"]
+        line = {"date": 1.0, "message": "\ufeff" + json.dumps({"mdc": {"requestId": sent[0]}})}
+        problems, notes = probe.check_fluent_bit([line], sent)
+        self.assertEqual(problems, [])
+        self.assertIn("1 record(s) keep the message's UTF-8 BOM", "\n".join(notes))
+
     def test_fluent_bit_ignores_a_record_that_is_no_request(self):
         sent = ["syslog-1-b-normal-0"]
         good = {"date": 1.0, "message": json.dumps({"mdc": {"requestId": sent[0]}})}
