@@ -144,11 +144,14 @@ class Shapes(unittest.TestCase):
             self.assertRegex(ex["source"], r"^(constructed|measured 2026-10-11)$", ex["name"])
 
     def test_status_class_follows_the_status(self):
-        want = {200: "ok", 204: "ok", 401: "401", 403: "403", 404: "404", 409: "4xx", 500: "5xx"}
+        def want(status):
+            return ("ok" if status < 400 else str(status) if status in (401, 403, 404)
+                    else "4xx" if status < 500 else "5xx")
+
         for ex in self.kept():
             out = ex["output"]
             if "http_status" in out:
-                self.assertEqual(out["status_class"], want[out["http_status"]], ex["name"])
+                self.assertEqual(out["status_class"], want(out["http_status"]), ex["name"])
             elif out.get("access_log_parse_error"):
                 self.assertEqual(out["status_class"], "unparsed", ex["name"])
             else:
