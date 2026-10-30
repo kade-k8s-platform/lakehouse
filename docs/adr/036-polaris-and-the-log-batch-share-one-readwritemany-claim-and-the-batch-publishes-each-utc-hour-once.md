@@ -1,6 +1,6 @@
 # ADR-036: Polaris and the log batch share one ReadWriteMany claim; the batch publishes each UTC hour once
 
-- **Status:** Amended by ADR-037
+- **Status:** Superseded by ADR-081
 - **Date:** 2026-10-11
 - **Related:** ADR-002, ADR-005, ADR-009, ADR-014, ADR-017, ADR-024, ADR-028, ADR-029, ADR-031
 

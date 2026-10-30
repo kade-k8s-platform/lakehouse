@@ -72,7 +72,7 @@ flowchart LR
 | [022](022-claude-prs-merge-through-the-auto-merge-workflow.md) | Claude's PRs merge through an auto-merge workflow once every check on the head is green | Amended by ADR-030 |
 | **Scope and integration** | | |
 | [023](023-other-teams-services-are-interfaces-with-stand-ins-on-the-gate.md) | Other teams' services are interfaces in `.env`, with stand-ins only on the gate | Superseded by ADR-031 |
-| [024](024-the-log-batch-hands-processed-files-to-the-observability-teams-fluent-bit.md) | The log batch hands processed files to the observability team's Fluent Bit | Accepted |
+| [024](024-the-log-batch-hands-processed-files-to-the-observability-teams-fluent-bit.md) | The log batch hands processed files to the observability team's Fluent Bit | Superseded by ADR-081 |
 | [025](025-datahub-with-postgresql-on-cnpg-a-small-kafka-and-a-small-opensearch.md) | Datahub runs with PostgreSQL on CloudNativePG, a single-broker Kafka and a small OpenSearch | Accepted |
 | [026](026-polaris-issues-its-own-tokens-and-asks-an-opa-policy-endpoint.md) | Polaris issues its own tokens and asks an OPA policy endpoint; principals are created by the catalog gateway | Accepted |
 | [027](027-ingress-is-denied-by-default-and-allowed-per-caller.md) | Ingress to this repository's namespaces is denied by default and allowed per caller | Superseded by ADR-044 |
@@ -84,8 +84,8 @@ flowchart LR
 | [033](033-release-candidates-are-gated-on-a-pr-from-main-into-rc-the-release-workflow-tags-rc.md) | Release candidates are gated on a PR from `main` into `rc`; the release workflow tags `rc` | Superseded by ADR-080 |
 | [034](034-recording-proxies-on-the-gate-prove-each-connection-and-its-exchanges.md) | Recording proxies on the gate prove each of Polaris's connections and its exchanges | Amended by ADR-035 |
 | [035](035-the-postgresql-recorder-ends-the-clients-tls-and-talks-plain-to-postgresql.md) | The PostgreSQL recorder ends the client's TLS and talks plain TCP to PostgreSQL | Accepted |
-| [036](036-polaris-and-the-log-batch-share-one-readwritemany-claim-and-the-batch-publishes-each-utc-hour-once.md) | Polaris and the log batch share one ReadWriteMany claim; the batch publishes each UTC hour once | Amended by ADR-037 |
-| [037](037-the-log-batch-installs-in-adr-029s-step-2-and-its-failure-stops-the-install.md) | The log batch installs in ADR-029's step 2, and its failure stops the install | Accepted |
+| [036](036-polaris-and-the-log-batch-share-one-readwritemany-claim-and-the-batch-publishes-each-utc-hour-once.md) | Polaris and the log batch share one ReadWriteMany claim; the batch publishes each UTC hour once | Superseded by ADR-081 |
+| [037](037-the-log-batch-installs-in-adr-029s-step-2-and-its-failure-stops-the-install.md) | The log batch installs in ADR-029's step 2, and its failure stops the install | Amended by ADR-081 |
 | [038](038-dry-run-and-smoke-run-from-gate-branches-before-the-pr-opens.md) | Dry-run and smoke gates run from throwaway `gate/*` branches on the PR's exact commit, before the PR opens | Superseded by ADR-050 |
 | [039](039-a-platform-pr-merges-only-when-passing-dry-run-and-smoke-gates-cover-its-head.md) | A platform PR merges only when passing dry-run and smoke gates cover its head | Amended by ADR-040 |
 | [040](040-log-batch-fixtures-come-from-a-real-utc-roll-and-a-log-batch-gate-ships-them-into-an-opensearch-stand-in.md) | Log batch fixtures come from a real UTC roll; a Log Batch Gate ships them into an OpenSearch stand-in | Amended by ADR-041 |

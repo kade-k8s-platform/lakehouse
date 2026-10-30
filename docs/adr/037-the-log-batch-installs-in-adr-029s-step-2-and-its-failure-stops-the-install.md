@@ -1,6 +1,6 @@
 # ADR-037: The log batch installs in ADR-029's step 2, and its failure stops the install
 
-- **Status:** Accepted
+- **Status:** Amended by ADR-081
 - **Date:** 2026-10-11
 - **Related:** ADR-028, ADR-029, ADR-036
 

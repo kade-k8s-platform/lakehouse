@@ -70,7 +70,7 @@ source does not matter for operation. What follows is the list they cover.
     stand-in (ADR-031).
   - The install order without storage and monitoring (restated in full by ADR-045).
   - Fluent Bit and OpenSearch belong to the observability team; this repository delivers the
-    log files ADR-014 describes, in a documented format (ADR-024).
+    log files ADR-014 describes, in a documented format (ADR-024, ADR-081).
   - ADR-014: its open question (sharing the log volume across nodes) is answered before the
     batch is built.
   - ADR-017: the gate installs stand-ins (SeaweedFS, Fluent Bit) that are never released
@@ -195,7 +195,7 @@ source does not matter for operation. What follows is the list they cover.
   [38133756150](https://github.com/enjay27/lakehouse/actions/runs/38133756150) (the image
   built and loaded; the 10 sign-in checks ok; console.json's 3 expectations and the other 32
   ok). Open: how the image reaches a target cluster (ADR-028).
-- The log batch (2026-10-11, ADR-014, ADR-024, ADR-036, ADR-037, #45). Polaris writes one
+- The log batch (2026-10-11, ADR-014, ADR-024, ADR-036, ADR-081, ADR-037, #45). Polaris writes one
   JSON file per pod to the `ReadWriteMany` claim `polaris-logs`, which `release.py` step 1
   creates before Polaris; step 2 installs the batch's CronJob before the console, and its
   failure stops the install. Smoke [38143901431](https://github.com/enjay27/lakehouse/actions/runs/38143901431)
