@@ -102,3 +102,59 @@ def check_lines(text, schema):
         else:
             good += 1
     return good, bad
+
+
+# Contract v3 (ADR-081): three line and aggregate schemas, and the JSON files OpenSearch takes.
+def load_v3(name):
+    """docs/contracts/polaris-logs-v3-<name>.schema.json for `candidate-line`, `error-line` and
+    `aggregate`; polaris-logs-v3-<name>.json for the templates, ISM policies, transform and
+    routing. FileNotFoundError for any other name."""
+    base = os.path.join(CONTRACTS, f"polaris-logs-v3-{name}")
+    path = base + ".schema.json" if name in V3_SCHEMAS else base + ".json"
+    with open(path) as f:
+        return json.load(f)
+
+
+V3_SCHEMAS = ("candidate-line", "error-line", "aggregate")
+
+
+def templates():
+    return {kind: load_v3(f"{kind}-template") for kind in ("candidate", "error", "aggregate")}
+
+
+def ism_policies():
+    return {kind: load_v3(f"{kind}-ism") for kind in ("candidate", "error")}
+
+
+def transform():
+    return load_v3("transform")
+
+
+def routing():
+    return load_v3("routing")
+
+
+def routing_examples():
+    return routing()["examples"]
+
+
+def kept_examples():
+    """The examples the sidecar keeps: the ones with an output record."""
+    return [e for e in routing_examples() if e["output"] is not None]
+
+
+def line_problems(output):
+    """A record the main Fluent Bit receives against the schema its index_class names."""
+    kind = output.get("index_class") if isinstance(output, dict) else None
+    if kind not in ("candidate", "error"):
+        return [f"index_class: {kind!r} is no index class of the contract"]
+    return problems(output, load_v3(f"{kind}-line"))
+
+
+def aggregate_problems(doc):
+    """An aggregate document against its schema. A float with no fraction (OpenSearch's `sum`
+    may write 360.0) is the integer JSON Schema 2020-12 calls it; 360.5 still fails."""
+    if isinstance(doc, dict):
+        doc = {k: int(v) if isinstance(v, float) and v.is_integer() else v
+               for k, v in doc.items()}
+    return problems(doc, load_v3("aggregate"))
