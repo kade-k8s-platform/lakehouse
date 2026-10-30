@@ -5,3 +5,11 @@ pyyaml==6.0.3 \
     --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc \
     --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6 \
     --hash=sha256:d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f
+
+# lupa runs the sidecar's Lua filter in the charts/ tests (ADR-081; Kade chose it, tasks#6 Q2 A).
+# LuaJIT 2.1 build (`lupa.luajit21`), the dialect of Fluent Bit's Lua. No dependencies, MIT style.
+# Hashes from PyPI, read 2026-10-30: the CPython 3.12 and 3.13 x86_64 wheels, and the sdist.
+lupa==2.8 \
+    --hash=sha256:8cf4f064a0e5531afce2d7d750120c10c10f9529139af6ca6150d13151034398 \
+    --hash=sha256:fc47f536ac13a79cef47d29a2b205576a22841f042a2bcec1676b95806e7706a \
+    --hash=sha256:d8022641b9ec8ecf2c5ecbe9f47e5a70e0b87c4b5ae921b92cb02a638e0acd08
