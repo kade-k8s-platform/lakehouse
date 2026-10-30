@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Polaris log contract v3: one aggregate document",
+  "description": "A document of polaris-logs-aggregate, one per group of the transform over the candidate and error indices (docs/contracts/polaris-logs.md, ADR-081 Decision 5). Group fields: window_start (the UTC hour) and every field up to level; metrics: lines, response_bytes, min_record_time, max_record_time. Whether the transform writes the times as strings or epoch milliseconds is NOT KNOWN.",
+  "type": "object",
+  "required": [
+    "window_start",
+    "hostName",
+    "index_class",
+    "resource",
+    "resource_kind",
+    "api_kind",
+    "user_principal_name",
+    "status_class",
+    "level",
+    "lines",
+    "response_bytes",
+    "min_record_time",
+    "max_record_time"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "window_start": {
+      "type": [
+        "string",
+        "integer"
+      ]
+    },
+    "hostName": {
+      "type": "string"
+    },
+    "index_class": {
+      "enum": [
+        "candidate",
+        "error"
+      ]
+    },
+    "resource": {
+      "type": "string"
+    },
+    "resource_kind": {
+      "type": "string"
+    },
+    "api_kind": {
+      "type": "string"
+    },
+    "user_principal_name": {
+      "type": "string"
+    },
+    "status_class": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "401",
+        "403",
+        "404",
+        "4xx",
+        "5xx",
+        "unparsed",
+        "none"
+      ]
+    },
+    "level": {
+      "type": "string"
+    },
+    "lines": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "response_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "min_record_time": {
+      "type": [
+        "string",
+        "integer"
+      ]
+    },
+    "max_record_time": {
+      "type": [
+        "string",
+        "integer"
+      ]
+    }
+  }
+}

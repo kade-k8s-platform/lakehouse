@@ -1,0 +1,37 @@
+{
+  "policy": {
+    "description": "Contract v3: the error index is deleted once it is 30d old; a daily index, so a line lives that long plus up to a day.",
+    "default_state": "hot",
+    "states": [
+      {
+        "name": "hot",
+        "actions": [],
+        "transitions": [
+          {
+            "state_name": "delete",
+            "conditions": {
+              "min_index_age": "30d"
+            }
+          }
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [
+          {
+            "delete": {}
+          }
+        ],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {
+        "index_patterns": [
+          "polaris-logs-error-*"
+        ],
+        "priority": 100
+      }
+    ]
+  }
+}

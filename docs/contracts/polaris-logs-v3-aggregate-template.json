@@ -1,0 +1,58 @@
+{
+  "index_patterns": [
+    "polaris-logs-aggregate"
+  ],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 1
+    },
+    "mappings": {
+      "dynamic": false,
+      "_meta": {
+        "contract_version": 3
+      },
+      "properties": {
+        "window_start": {
+          "type": "date"
+        },
+        "hostName": {
+          "type": "keyword"
+        },
+        "index_class": {
+          "type": "keyword"
+        },
+        "resource": {
+          "type": "keyword"
+        },
+        "resource_kind": {
+          "type": "keyword"
+        },
+        "api_kind": {
+          "type": "keyword"
+        },
+        "user_principal_name": {
+          "type": "keyword"
+        },
+        "status_class": {
+          "type": "keyword"
+        },
+        "level": {
+          "type": "keyword"
+        },
+        "lines": {
+          "type": "long"
+        },
+        "response_bytes": {
+          "type": "long"
+        },
+        "min_record_time": {
+          "type": "date"
+        },
+        "max_record_time": {
+          "type": "date"
+        }
+      }
+    }
+  }
+}

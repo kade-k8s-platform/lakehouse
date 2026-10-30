@@ -1,0 +1,37 @@
+{
+  "policy": {
+    "description": "Contract v3: the candidate index is deleted once it is 3d old; a daily index, so a line lives that long plus up to a day.",
+    "default_state": "hot",
+    "states": [
+      {
+        "name": "hot",
+        "actions": [],
+        "transitions": [
+          {
+            "state_name": "delete",
+            "conditions": {
+              "min_index_age": "3d"
+            }
+          }
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [
+          {
+            "delete": {}
+          }
+        ],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {
+        "index_patterns": [
+          "polaris-logs-candidate-*"
+        ],
+        "priority": 100
+      }
+    ]
+  }
+}

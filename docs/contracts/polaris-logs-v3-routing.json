@@ -1,0 +1,951 @@
+{
+  "description": "Policy-v5 routing for contract v3 (docs/contracts/polaris-logs.md, ADR-081 Decision 3): rule -> index, first match wins, redaction runs before every rule. scripts/test_polaris_logs_contract.py keeps this equal to the ADR's table. Rule 2b -> candidate and rule 7 -> error are placeholder choices of the ADR.",
+  "policy": "policy-v5",
+  "rules": {
+    "1": "error",
+    "2a": "dropped",
+    "2b": "candidate",
+    "2c": "dropped",
+    "3'": "candidate",
+    "3": "error",
+    "4": "candidate",
+    "5": "candidate",
+    "-": "dropped",
+    "6": "dropped",
+    "7": "error"
+  },
+  "counters": {
+    "not_found": [
+      "404"
+    ],
+    "errors_4xx": [
+      "401",
+      "403",
+      "4xx"
+    ],
+    "auth_denied": [
+      "401",
+      "403"
+    ],
+    "errors_5xx": [
+      "5xx"
+    ]
+  },
+  "gone": [
+    "lines_in",
+    "processed",
+    "dropped",
+    "malformed",
+    "sources",
+    "corrupt_files",
+    "orphans_moved",
+    "idle_log_files",
+    "pod_list_error",
+    "access_seen",
+    "access_kept",
+    "access_counted",
+    "counted_read",
+    "counted_post",
+    "counted_404",
+    "parse_errors",
+    "bytes_total",
+    "distinct_resources",
+    "distinct_principals",
+    "resources_other",
+    "resources_other_distinct",
+    "principals_other",
+    "role_keys_forced",
+    "app_dropped",
+    "app_dropped_total",
+    "app_dropped_404",
+    "held_orphans",
+    "commit_count",
+    "commit_ms_sum",
+    "commit_ms_min",
+    "commit_ms_max"
+  ],
+  "aggregate_example": {
+    "window_start": "2026-10-30T12:00:00.000Z",
+    "hostName": "polaris-7f4d69c67c-aaaaa",
+    "index_class": "candidate",
+    "resource": "/api/catalog/v1/cat/namespaces/a/tables/t",
+    "resource_kind": "table",
+    "api_kind": "catalog",
+    "user_principal_name": "root",
+    "status_class": "404",
+    "level": "INFO",
+    "lines": 3,
+    "response_bytes": 360,
+    "min_record_time": "2026-10-30T12:05:00.100000000Z",
+    "max_record_time": "2026-10-30T12:41:10.900000000Z"
+  },
+  "examples": [
+    {
+      "name": "ERROR line",
+      "rule": "1",
+      "route": "error",
+      "source": "measured 2026-10-11",
+      "input": {
+        "timestamp": "2026-10-30T12:40:32.753600155Z",
+        "sequence": 1772,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "org.apache.polaris.service.exception.IcebergExceptionMapper",
+        "level": "ERROR",
+        "message": "Unhandled exception",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "gate-req-0003",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:32.753600155Z",
+        "sequence": 1772,
+        "loggerName": "org.apache.polaris.service.exception.IcebergExceptionMapper",
+        "level": "ERROR",
+        "message": "Unhandled exception",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "gate-req-0003",
+          "realmId": "POLARIS"
+        },
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:32.753600155Z:1772",
+        "index_class": "error",
+        "policy_rule": "1",
+        "policy": "policy-v5",
+        "resource": "-",
+        "resource_kind": "none",
+        "api_kind": "none",
+        "status_class": "none",
+        "user_principal_name": "-"
+      }
+    },
+    {
+      "name": "ERROR with clientSecret",
+      "rule": "1",
+      "route": "error",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:17.753600155Z",
+        "sequence": 17,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "org.apache.polaris.service.auth.Something",
+        "level": "ERROR",
+        "message": "Bad request, clientSecret: abc123",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {},
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:17.753600155Z",
+        "sequence": 17,
+        "loggerName": "org.apache.polaris.service.auth.Something",
+        "level": "ERROR",
+        "message": "Bad request, clientSecret: <redacted>",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {},
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "secret_redacted": true,
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:17.753600155Z:17",
+        "index_class": "error",
+        "policy_rule": "1",
+        "policy": "policy-v5",
+        "resource": "-",
+        "resource_kind": "none",
+        "api_kind": "none",
+        "status_class": "none",
+        "user_principal_name": "-"
+      }
+    },
+    {
+      "name": "WARN line",
+      "rule": "1",
+      "route": "error",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:02.753600155Z",
+        "sequence": 2,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "org.apache.polaris.service.auth.Something",
+        "level": "WARN",
+        "message": "Token about to expire",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {},
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:02.753600155Z",
+        "sequence": 2,
+        "loggerName": "org.apache.polaris.service.auth.Something",
+        "level": "WARN",
+        "message": "Token about to expire",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {},
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:02.753600155Z:2",
+        "index_class": "error",
+        "policy_rule": "1",
+        "policy": "policy-v5",
+        "resource": "-",
+        "resource_kind": "none",
+        "api_kind": "none",
+        "status_class": "none",
+        "user_principal_name": "-"
+      }
+    },
+    {
+      "name": "commit timing",
+      "rule": "2a",
+      "route": "dropped",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:03.753600155Z",
+        "sequence": 3,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "org.apache.polaris.service.catalog.iceberg.LocalIcebergCatalog",
+        "level": "INFO",
+        "message": "Successfully committed to table cat.a.t in 12 ms",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-3",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": null
+    },
+    {
+      "name": "mapper INFO",
+      "rule": "2b",
+      "route": "candidate",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:04.753600155Z",
+        "sequence": 4,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "org.apache.polaris.service.exception.IcebergExceptionMapper",
+        "level": "INFO",
+        "message": "Full RuntimeException",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-4",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:04.753600155Z",
+        "sequence": 4,
+        "loggerName": "org.apache.polaris.service.exception.IcebergExceptionMapper",
+        "level": "INFO",
+        "message": "Full RuntimeException",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-4",
+          "realmId": "POLARIS"
+        },
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:04.753600155Z:4",
+        "index_class": "candidate",
+        "policy_rule": "2b",
+        "policy": "policy-v5",
+        "resource": "-",
+        "resource_kind": "none",
+        "api_kind": "none",
+        "status_class": "none",
+        "user_principal_name": "-"
+      }
+    },
+    {
+      "name": "other logger INFO",
+      "rule": "2c",
+      "route": "dropped",
+      "source": "measured 2026-10-11",
+      "input": {
+        "timestamp": "2026-10-30T12:40:14.753600155Z",
+        "sequence": 1754,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "org.apache.polaris.persistence.nosql.impl.cache.CaffeineCacheBackend",
+        "level": "INFO",
+        "message": "Initialized persistence cache",
+        "threadName": "main",
+        "threadId": 31,
+        "mdc": {},
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": null
+    },
+    {
+      "name": "GET 404",
+      "rule": "3'",
+      "route": "candidate",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:05.753600155Z",
+        "sequence": 5,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"GET /api/catalog/v1/cat/namespaces/a/tables/t HTTP/1.1\" 404 120",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-5",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:05.753600155Z",
+        "sequence": 5,
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"GET /api/catalog/v1/cat/namespaces/a/tables/t HTTP/1.1\" 404 120",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-5",
+          "realmId": "POLARIS"
+        },
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:05.753600155Z:5",
+        "index_class": "candidate",
+        "policy_rule": "3'",
+        "policy": "policy-v5",
+        "resource": "/api/catalog/v1/cat/namespaces/a/tables/t",
+        "resource_kind": "table",
+        "api_kind": "catalog",
+        "status_class": "404",
+        "user_principal_name": "root",
+        "client_ip": "172.17.0.1",
+        "http_method": "GET",
+        "api_path": "/api/catalog/v1/cat/namespaces/a/tables/t",
+        "http_status": 404,
+        "response_size": 120
+      }
+    },
+    {
+      "name": "GET 401",
+      "rule": "3",
+      "route": "error",
+      "source": "measured 2026-10-11",
+      "input": {
+        "timestamp": "2026-10-30T12:40:31.753600155Z",
+        "sequence": 1771,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - - [30/Oct/2026:12:40:00 +0000] \"GET /api/management/v1/catalogs HTTP/1.1\" 401 -",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "gate-req-0002",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:31.753600155Z",
+        "sequence": 1771,
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - - [30/Oct/2026:12:40:00 +0000] \"GET /api/management/v1/catalogs HTTP/1.1\" 401 -",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "gate-req-0002",
+          "realmId": "POLARIS"
+        },
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:31.753600155Z:1771",
+        "index_class": "error",
+        "policy_rule": "3",
+        "policy": "policy-v5",
+        "resource": "/api/management/v1/catalogs",
+        "resource_kind": "collection",
+        "api_kind": "management",
+        "status_class": "401",
+        "user_principal_name": "-",
+        "client_ip": "172.17.0.1",
+        "http_method": "GET",
+        "api_path": "/api/management/v1/catalogs",
+        "http_status": 401,
+        "response_size": 0
+      }
+    },
+    {
+      "name": "GET 403",
+      "rule": "3",
+      "route": "error",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:06.753600155Z",
+        "sequence": 6,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"GET /api/management/v1/principals HTTP/1.1\" 403 90",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-6",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:06.753600155Z",
+        "sequence": 6,
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"GET /api/management/v1/principals HTTP/1.1\" 403 90",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-6",
+          "realmId": "POLARIS"
+        },
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:06.753600155Z:6",
+        "index_class": "error",
+        "policy_rule": "3",
+        "policy": "policy-v5",
+        "resource": "/api/management/v1/principals",
+        "resource_kind": "collection",
+        "api_kind": "management",
+        "status_class": "403",
+        "user_principal_name": "root",
+        "client_ip": "172.17.0.1",
+        "http_method": "GET",
+        "api_path": "/api/management/v1/principals",
+        "http_status": 403,
+        "response_size": 90
+      }
+    },
+    {
+      "name": "GET 500",
+      "rule": "3",
+      "route": "error",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:07.753600155Z",
+        "sequence": 7,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"GET /api/catalog/v1/cat/namespaces HTTP/1.1\" 500 300",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-7",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:07.753600155Z",
+        "sequence": 7,
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"GET /api/catalog/v1/cat/namespaces HTTP/1.1\" 500 300",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-7",
+          "realmId": "POLARIS"
+        },
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:07.753600155Z:7",
+        "index_class": "error",
+        "policy_rule": "3",
+        "policy": "policy-v5",
+        "resource": "/api/catalog/v1/cat/namespaces",
+        "resource_kind": "collection",
+        "api_kind": "catalog",
+        "status_class": "5xx",
+        "user_principal_name": "root",
+        "client_ip": "172.17.0.1",
+        "http_method": "GET",
+        "api_path": "/api/catalog/v1/cat/namespaces",
+        "http_status": 500,
+        "response_size": 300
+      }
+    },
+    {
+      "name": "unparsable access line",
+      "rule": "3",
+      "route": "error",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:08.753600155Z",
+        "sequence": 8,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "not an access line",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-8",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:08.753600155Z",
+        "sequence": 8,
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "not an access line",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-8",
+          "realmId": "POLARIS"
+        },
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:08.753600155Z:8",
+        "index_class": "error",
+        "policy_rule": "3",
+        "policy": "policy-v5",
+        "resource": "-",
+        "resource_kind": "none",
+        "api_kind": "none",
+        "status_class": "unparsed",
+        "user_principal_name": "-",
+        "access_log_parse_error": true
+      }
+    },
+    {
+      "name": "PUT 200",
+      "rule": "4",
+      "route": "candidate",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:09.753600155Z",
+        "sequence": 9,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"PUT /api/management/v1/principals/p1 HTTP/1.1\" 200 60",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-9",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:09.753600155Z",
+        "sequence": 9,
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"PUT /api/management/v1/principals/p1 HTTP/1.1\" 200 60",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-9",
+          "realmId": "POLARIS"
+        },
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:09.753600155Z:9",
+        "index_class": "candidate",
+        "policy_rule": "4",
+        "policy": "policy-v5",
+        "resource": "/api/management/v1/principals/p1",
+        "resource_kind": "principal",
+        "api_kind": "management",
+        "status_class": "ok",
+        "user_principal_name": "root",
+        "client_ip": "172.17.0.1",
+        "http_method": "PUT",
+        "api_path": "/api/management/v1/principals/p1",
+        "http_status": 200,
+        "response_size": 60
+      }
+    },
+    {
+      "name": "DELETE 204",
+      "rule": "4",
+      "route": "candidate",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:10.753600155Z",
+        "sequence": 10,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"DELETE /api/catalog/v1/cat/namespaces/a/tables/t HTTP/1.1\" 204 0",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-10",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:10.753600155Z",
+        "sequence": 10,
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"DELETE /api/catalog/v1/cat/namespaces/a/tables/t HTTP/1.1\" 204 0",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-10",
+          "realmId": "POLARIS"
+        },
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:10.753600155Z:10",
+        "index_class": "candidate",
+        "policy_rule": "4",
+        "policy": "policy-v5",
+        "resource": "/api/catalog/v1/cat/namespaces/a/tables/t",
+        "resource_kind": "table",
+        "api_kind": "catalog",
+        "status_class": "ok",
+        "user_principal_name": "root",
+        "client_ip": "172.17.0.1",
+        "http_method": "DELETE",
+        "api_path": "/api/catalog/v1/cat/namespaces/a/tables/t",
+        "http_status": 204,
+        "response_size": 0
+      }
+    },
+    {
+      "name": "PATCH 200",
+      "rule": "4",
+      "route": "candidate",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:11.753600155Z",
+        "sequence": 11,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"PATCH /api/management/v1/catalogs/c HTTP/1.1\" 200 40",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-11",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:11.753600155Z",
+        "sequence": 11,
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"PATCH /api/management/v1/catalogs/c HTTP/1.1\" 200 40",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-11",
+          "realmId": "POLARIS"
+        },
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:11.753600155Z:11",
+        "index_class": "candidate",
+        "policy_rule": "4",
+        "policy": "policy-v5",
+        "resource": "/api/management/v1/catalogs/c",
+        "resource_kind": "catalog",
+        "api_kind": "management",
+        "status_class": "ok",
+        "user_principal_name": "root",
+        "client_ip": "172.17.0.1",
+        "http_method": "PATCH",
+        "api_path": "/api/management/v1/catalogs/c",
+        "http_status": 200,
+        "response_size": 40
+      }
+    },
+    {
+      "name": "PUT 409",
+      "rule": "3",
+      "route": "error",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:12.753600155Z",
+        "sequence": 12,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"PUT /api/management/v1/principals/p1 HTTP/1.1\" 409 80",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-12",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:12.753600155Z",
+        "sequence": 12,
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"PUT /api/management/v1/principals/p1 HTTP/1.1\" 409 80",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-12",
+          "realmId": "POLARIS"
+        },
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:12.753600155Z:12",
+        "index_class": "error",
+        "policy_rule": "3",
+        "policy": "policy-v5",
+        "resource": "/api/management/v1/principals/p1",
+        "resource_kind": "principal",
+        "api_kind": "management",
+        "status_class": "4xx",
+        "user_principal_name": "root",
+        "client_ip": "172.17.0.1",
+        "http_method": "PUT",
+        "api_path": "/api/management/v1/principals/p1",
+        "http_status": 409,
+        "response_size": 80
+      }
+    },
+    {
+      "name": "POST management 201",
+      "rule": "5",
+      "route": "candidate",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:13.753600155Z",
+        "sequence": 13,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"POST /api/management/v1/principals HTTP/1.1\" 201 200",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-13",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:13.753600155Z",
+        "sequence": 13,
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"POST /api/management/v1/principals HTTP/1.1\" 201 200",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-13",
+          "realmId": "POLARIS"
+        },
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:13.753600155Z:13",
+        "index_class": "candidate",
+        "policy_rule": "5",
+        "policy": "policy-v5",
+        "resource": "/api/management/v1/principals",
+        "resource_kind": "collection",
+        "api_kind": "management",
+        "status_class": "ok",
+        "user_principal_name": "root",
+        "client_ip": "172.17.0.1",
+        "http_method": "POST",
+        "api_path": "/api/management/v1/principals",
+        "http_status": 201,
+        "response_size": 200
+      }
+    },
+    {
+      "name": "POST catalog 200",
+      "rule": "-",
+      "route": "dropped",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:14.753600155Z",
+        "sequence": 14,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"POST /api/catalog/v1/cat/namespaces HTTP/1.1\" 200 50",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-14",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": null
+    },
+    {
+      "name": "GET 200",
+      "rule": "6",
+      "route": "dropped",
+      "source": "measured 2026-10-11",
+      "input": {
+        "timestamp": "2026-10-30T12:40:30.753600155Z",
+        "sequence": 1770,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"GET /api/management/v1/catalogs HTTP/1.1\" 200 15",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "gate-req-0001",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": null
+    },
+    {
+      "name": "HEAD 200",
+      "rule": "6",
+      "route": "dropped",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:15.753600155Z",
+        "sequence": 15,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"HEAD /api/catalog/v1/cat/namespaces/a/tables/t HTTP/1.1\" 200 0",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-15",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": null
+    },
+    {
+      "name": "OPTIONS 200",
+      "rule": "7",
+      "route": "error",
+      "source": "constructed",
+      "input": {
+        "timestamp": "2026-10-30T12:40:16.753600155Z",
+        "sequence": 16,
+        "loggerClassName": "org.jboss.logging.Logger",
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"OPTIONS /api/catalog/v1/cat/namespaces HTTP/1.1\" 200 0",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-16",
+          "realmId": "POLARIS"
+        },
+        "ndc": "",
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "processName": "/usr/lib/jvm/java/bin/java",
+        "processId": 1
+      },
+      "output": {
+        "timestamp": "2026-10-30T12:40:16.753600155Z",
+        "sequence": 16,
+        "loggerName": "io.quarkus.http.access-log",
+        "level": "INFO",
+        "message": "172.17.0.1 - root [30/Oct/2026:12:40:00 +0000] \"OPTIONS /api/catalog/v1/cat/namespaces HTTP/1.1\" 200 0",
+        "threadName": "executor-thread-2",
+        "threadId": 31,
+        "mdc": {
+          "requestId": "r-16",
+          "realmId": "POLARIS"
+        },
+        "hostName": "polaris-7f4d69c67c-aaaaa",
+        "event_id": "polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:16.753600155Z:16",
+        "index_class": "error",
+        "policy_rule": "7",
+        "policy": "policy-v5",
+        "resource": "/api/catalog/v1/cat/namespaces",
+        "resource_kind": "collection",
+        "api_kind": "catalog",
+        "status_class": "ok",
+        "user_principal_name": "root",
+        "client_ip": "172.17.0.1",
+        "http_method": "OPTIONS",
+        "api_path": "/api/catalog/v1/cat/namespaces",
+        "http_status": 200,
+        "response_size": 0
+      }
+    }
+  ]
+}

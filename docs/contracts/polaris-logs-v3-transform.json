@@ -1,0 +1,95 @@
+{
+  "transform": {
+    "enabled": true,
+    "continuous": true,
+    "description": "Contract v3: lines per hour and group over the candidate and error indices.",
+    "source_index": "polaris-logs-source",
+    "target_index": "polaris-logs-aggregate",
+    "page_size": 1000,
+    "schedule": {
+      "interval": {
+        "period": 1,
+        "unit": "Minutes"
+      }
+    },
+    "groups": [
+      {
+        "date_histogram": {
+          "source_field": "timestamp",
+          "target_field": "window_start",
+          "fixed_interval": "1h"
+        }
+      },
+      {
+        "terms": {
+          "source_field": "hostName",
+          "target_field": "hostName"
+        }
+      },
+      {
+        "terms": {
+          "source_field": "index_class",
+          "target_field": "index_class"
+        }
+      },
+      {
+        "terms": {
+          "source_field": "resource",
+          "target_field": "resource"
+        }
+      },
+      {
+        "terms": {
+          "source_field": "resource_kind",
+          "target_field": "resource_kind"
+        }
+      },
+      {
+        "terms": {
+          "source_field": "api_kind",
+          "target_field": "api_kind"
+        }
+      },
+      {
+        "terms": {
+          "source_field": "user_principal_name",
+          "target_field": "user_principal_name"
+        }
+      },
+      {
+        "terms": {
+          "source_field": "status_class",
+          "target_field": "status_class"
+        }
+      },
+      {
+        "terms": {
+          "source_field": "level",
+          "target_field": "level"
+        }
+      }
+    ],
+    "aggregations": {
+      "lines": {
+        "value_count": {
+          "field": "event_id"
+        }
+      },
+      "response_bytes": {
+        "sum": {
+          "field": "response_size"
+        }
+      },
+      "min_record_time": {
+        "min": {
+          "field": "timestamp"
+        }
+      },
+      "max_record_time": {
+        "max": {
+          "field": "timestamp"
+        }
+      }
+    }
+  }
+}
