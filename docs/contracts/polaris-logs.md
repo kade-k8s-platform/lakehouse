@@ -1,4 +1,163 @@
-# The Polaris log files: contract v2
+# The Polaris log records: contract v3
+
+What the log sidecar and the main Fluent Bit hand to the observability team's OpenSearch
+(ADR-081, which supersedes ADR-036 and amends ADR-024): which lines are kept, where they go,
+what a record holds, and what the aggregate holds. A change to it is a new version, announced to
+the observability team before it ships (ADR-024's rule, carried over by ADR-081).
+
+**Status.** The values below are placeholders where marked and **assumed, not measured on the
+syslog route**: whether Polaris's syslog JSON carries `hostName`, `sequence`, `mdc` and
+`loggerName` like the file appender's is not yet known, and the proof on the gate amends this
+file if they differ. The lines of the examples were measured on 2026-10-11 from Polaris 1.6.0
+where the example says so, and constructed from them otherwise (`"source"` in the routing file).
+Every Polaris upgrade re-checks this file (ADR-009).
+
+The machine-readable form is ten files next to this one, all named `polaris-logs-v3-*`:
+
+| File | What |
+|---|---|
+| `polaris-logs-v3-routing.json` | The rule table (equal to ADR-081's, checked by `scripts/test_polaris_logs_contract.py`), the derived counters, the names that are gone, and the examples: a Polaris line and the record it becomes |
+| `polaris-logs-v3-candidate-line.schema.json`, `polaris-logs-v3-error-line.schema.json` | JSON Schema (2020-12) of a record of each index |
+| `polaris-logs-v3-aggregate.schema.json` | JSON Schema of an aggregate document |
+| `polaris-logs-v3-candidate-template.json`, `polaris-logs-v3-error-template.json`, `polaris-logs-v3-aggregate-template.json` | The three index templates |
+| `polaris-logs-v3-candidate-ism.json`, `polaris-logs-v3-error-ism.json` | The two ISM policies |
+| `polaris-logs-v3-transform.json` | The transform from the two line indices to the aggregate |
+
+## Three indices (names are placeholders)
+
+| Index | Holds | Kept |
+|---|---|---|
+| `polaris-logs-candidate-*` (daily) | Lines routed to `candidate` | 3 days: ISM deletes it at `min_index_age: 3d` |
+| `polaris-logs-error-*` (daily) | Lines routed to `error` | 30 days: ISM deletes it at `min_index_age: 30d` |
+| `polaris-logs-aggregate` | One document per group and hour | The observability team's normal retention; no ISM policy here |
+
+An error line is in the error index only, never also in the candidate index. Both line
+templates carry the alias `polaris-logs-source`, which is the transform's source: the pattern
+`polaris-logs-*` would match the aggregate index and feed it back. The templates set
+`dynamic: false` and map every property of their schema; `message` is `text` with a keyword
+subfield, `exception` is an object that is not indexed. Shards and replicas (1 and 1) are
+placeholders. That OpenSearch 3.6.0 accepts the templates, the policies and the transform is
+not yet verified.
+
+## Which lines go where: policy-v5
+
+The sidecar reads every line, redacts, and routes it by the first rule that matches. The rules
+are the audit policy v5 of contract v2 without its counters, hold or state (ADR-081
+Decision 3):
+
+| # | A line that is | Goes to |
+|---|---|---|
+| * | any line whose message holds an unmasked `clientSecret` | The value becomes `<redacted>` and `secret_redacted: true` is added, before any rule |
+| 1 | level `ERROR` or `WARN` | error |
+| 2a | from `LocalIcebergCatalog` (commit timing) | dropped |
+| 2b | from `IcebergExceptionMapper` or `PolarisServiceImpl`, not caught by rule 1 | candidate (placeholder: ADR-081 named no index) |
+| 2c | from any other application logger | dropped |
+| 3' | an access line with status 404 | candidate |
+| 3 | an access line with status 400 or above except 404, or one that does not parse | error |
+| 4 | an access line for PUT, DELETE or PATCH | candidate |
+| 5 | an access line for a POST under `/api/management/` | candidate |
+| - | an access line for any other POST | dropped |
+| 6 | an access line for a successful GET or HEAD | dropped |
+| 7 | anything else | error (placeholder: an unexpected line is worth keeping longer) |
+
+First match wins, so a failed PUT, DELETE, PATCH or POST is an error line (rule 3), never a
+candidate line. Dropped lines are counted nowhere. Rule 2b is stateless: v2's hold for the
+request's access line is gone, so there is no `held_orphan`. The mechanism that sends a record
+to its index (a tag, or two streams) is not part of this contract; the field `index_class`
+carries the result in either case.
+
+## A record
+
+A JSON object per line, UTF-8. A reader accepts fields it does not know. The Polaris fields are
+as in v2; `loggerClassName`, `ndc`, `processName` and `processId` are removed, and so is the
+syslog envelope (application name, host, process id) once the body is parsed.
+
+| Field | Type | In | What |
+|---|---|---|---|
+| `timestamp`, `loggerName`, `level`, `message`, `hostName` | string | both, required | Polaris's own; `message` is redacted. `hostName` is assumed on the syslog route |
+| `sequence`, `threadName`, `threadId`, `mdc` | | both, optional | Polaris's own; optional because the syslog route is not measured |
+| `exception` | object | both, optional | Polaris's JSON `exception`, in the shape contract v2 records |
+| `client_ip`, `http_method`, `api_path`, `http_status`, `response_size`, `access_log_parse_error` | | access lines | As in v2, parsed by the sidecar |
+| `user_principal_name` | string | both, required | The caller on an access line (`-` for none); `-` on any other line |
+| `secret_redacted` | `true` | both | As in v2 |
+| `event_id` | string, no whitespace | both, required | The document id, so a resend overwrites. Placeholder composition: `<hostName>:<timestamp>:<sequence>`, unique per pod incarnation (the SHA-1 of v2 has no Lua builtin) |
+| `index_class` | `candidate` or `error` | both, required | The index the record belongs to (the candidate schema accepts only the first, the error schema only the second) |
+| `policy_rule` | string | both, required | The rule id above: `2b`, `3'`, `4`, `5` in the candidate index; `1`, `3`, `7` in the error index |
+| `policy` | `policy-v5` | both, required | |
+| `resource`, `resource_kind`, `api_kind` | string | both, required | The 21 resource patterns of v2 (`/tables/t/metrics` counts on `/tables/t`), their kind, and `catalog`, `management` or `other`. A line that is not an access line carries `-`, `none`, `none` |
+| `status_class` | string | both, required | `ok` (below 400), `401`, `403`, `404`, `4xx` (other 4xx), `5xx`, `unparsed` (an access line that did not parse), `none` (not an access line) |
+
+Gone from v2's line: `log_hour`, `held_orphan` and the SHA-1 `event_id`.
+
+Example: a request without a token, rule 3, error index (measured 2026-10-11, re-dated;
+wrapped here).
+
+```json
+{"timestamp":"2026-10-30T12:40:11.753600155Z","sequence":1771,
+ "loggerName":"io.quarkus.http.access-log","level":"INFO",
+ "message":"172.17.0.1 - - [30/Oct/2026:12:40:00 +0000] \"GET /api/management/v1/catalogs HTTP/1.1\" 401 -",
+ "hostName":"polaris-7f4d69c67c-aaaaa","client_ip":"172.17.0.1","user_principal_name":"-",
+ "http_method":"GET","api_path":"/api/management/v1/catalogs","http_status":401,
+ "response_size":0,"event_id":"polaris-7f4d69c67c-aaaaa:2026-10-30T12:40:11.753600155Z:1771",
+ "index_class":"error","policy_rule":"3","policy":"policy-v5",
+ "resource":"/api/management/v1/catalogs","resource_kind":"collection","api_kind":"management",
+ "status_class":"401"}
+```
+
+## The aggregate
+
+The transform runs continuously over the alias `polaris-logs-source` (the candidate and the
+error index) and writes one document per group to `polaris-logs-aggregate`. The groups are
+`window_start` (the UTC hour), `hostName`, `index_class`, `resource`, `resource_kind`,
+`api_kind`, `user_principal_name`, `status_class` and `level`; `index_class` is a group so that
+two transforms, the fallback if one source over two indices is refused (one per index kind, the
+same target), never write the same bucket. The metrics:
+
+| Field | What |
+|---|---|
+| `lines` | The count of kept lines (`value_count` of `event_id`) |
+| `response_bytes` | The sum of `response_size` |
+| `min_record_time`, `max_record_time` | The first and the last `timestamp` |
+
+A document has no other field. A non-access line carries `-` or `none` in the access group
+fields so that no group lacks one (whether the transform would skip such a document is not
+known). The shortest interval of the transform (placeholder: 1 minute), the bucket `_id` and the
+format of the time fields (string or epoch milliseconds) are not known either.
+
+**Counters are sums over `status_class`**, so a reader derives them; they are not fields:
+
+| Counter | Sum of `lines` where `status_class` is | Replaces |
+|---|---|---|
+| `not_found` | `404` (from the candidate index) | `counted_404` |
+| `errors_4xx` | `401`, `403` or `4xx`; **404 is not in it** | v2's `errors_4xx`, which counted it |
+| `auth_denied` | `401` or `403` | `auth_denied` |
+| `errors_5xx` | `5xx` | `errors_5xx` |
+| `errors_kept` | any, where `index_class` is `error` | `errors_kept` |
+| `by_pod` | any, grouped by `hostName` | `by_pod` |
+
+**Gone, with no replacement** (ADR-081 Decision 6): `lines_in`, `processed`, `dropped`,
+`malformed`, `sources`, `corrupt_files`, `orphans_moved`, `idle_log_files`, `pod_list_error`,
+`access_seen`, `access_kept`, `access_counted`, `counted_read`, `counted_post`, `counted_404`,
+`parse_errors`, `bytes_total`, `distinct_resources`, `distinct_principals`, `resources_other`,
+`resources_other_distinct`, `principals_other`, `role_keys_forced`, `app_dropped*`,
+`held_orphans`, `commit_*`, the row caps (`__other__`, `__errors__`) and the check that the
+books balance. Reads, 2a and 2c lines and other dropped lines are not counted anywhere.
+
+## Delivery loss
+
+The record goes from Polaris to the sidecar over a syslog stream with an asynchronous queue
+that discards when full (ADR-081 Decision 2), and from the sidecar to OpenSearch through the
+main Fluent Bit. A line can therefore be lost while the sidecar is down or slow, and nothing
+counts it: the aggregate is the count of lines that arrived, not of lines Polaris wrote.
+
+---
+
+# Contract v2 (superseded by v3, ADR-081)
+
+**Superseded.** Contract v3 above replaces this one. It stays in force, unchanged, for
+`charts/polaris-log-batch`, `images/polaris-log-batch` and the gate until they are removed;
+its five schema files (`polaris-logs-processed.schema.json`, `-summary`, `-resource`,
+`-principal` and `-app-dropped.schema.json`) are not edited.
 
 What the log batch hands to the observability team's Fluent Bit (ADR-024): where the files
 are, what each line holds, and when an hour is complete. The decisions are ADR-014, ADR-024
@@ -220,3 +379,7 @@ worth a look.
   the summary. The first contract a release ships. Corrected before any release shipped it
   (#54): rule 2a names Polaris 1.6.0's `LocalIcebergCatalog`, so commits reach the rows instead
   of only the `app_dropped` counts; the `exception` field's shape is recorded.
+- **v3** (ADR-081): Polaris logs through a sidecar into two line indices (candidate, 3 days;
+  error, 30 days) and an aggregate made by a transform; two line shapes, the routing of policy-v5
+  per rule, 404 lines kept in the candidate index, the batch's counters replaced by sums over
+  `status_class`. v2 stays in force for the batch until it is removed.
