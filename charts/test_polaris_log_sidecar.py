@@ -192,6 +192,11 @@ class Config(unittest.TestCase):
         n, unit = re.fullmatch(r"(\d+)(KB|MB)", inp["buffer_max_size"]).groups()
         self.assertGreater(int(n) * size[unit], self.values["syslog"]["maxLength"])
 
+    def test_a_measured_exception_line_is_not_cut(self):
+        # The contract measured exception lines of 15 KB and 40 KB (docs/contracts/); a line over
+        # Quarkus's max-length is cut into invalid JSON (Kade, 2026-10-30: raise maxLength).
+        self.assertGreater(self.values["syslog"]["maxLength"], 40 * 1024)
+
     def test_memory_only(self):
         def keys(node):
             if isinstance(node, dict):
