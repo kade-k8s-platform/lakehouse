@@ -1,6 +1,6 @@
 # ADR-081: Polaris logs are filtered in a sidecar into a 3-day candidate index and aggregated by an OpenSearch transform
 
-- **Status:** Accepted
+- **Status:** Amended by ADR-082
 - **Date:** 2026-10-30
 - **Related:** ADR-000, ADR-001, ADR-009, ADR-013, ADR-014, ADR-023, ADR-024, ADR-031, ADR-036, ADR-037, ADR-040, ADR-041, ADR-045, ADR-046, ADR-048, ADR-074
 
