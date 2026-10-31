@@ -1,23 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Polaris log contract v3: one candidate line",
-  "description": "A record of the candidate index (polaris-logs-candidate-*), as the sidecar hands it to the main Fluent Bit: a line Polaris 1.6.0 wrote that policy-v5 routes to the candidate index, without loggerClassName, ndc, processName and processId, with the access-log fields parsed and the v3 fields added (docs/contracts/polaris-logs.md, ADR-081). sequence, threadName, threadId and mdc are optional and hostName is assumed: the syslog route is not yet measured.",
+  "description": "A record of the candidate index (polaris-logs-candidate-*), as the sidecar hands it to the main Fluent Bit: Polaris 1.6.0's JSON as the sidecar's parser left it (values keep their JSON types) plus, on an access line, six strings from the regex parser: client_ip, user_principal_name, http_method, api_path, http_status, response_size. The sidecar adds no other field and does not redact (docs/contracts/polaris-logs.md, ADR-082). Unknown fields are accepted: loggerClassName, ndc, processName, processId and the syslog envelope keys are present and not indexed. Every candidate record came from parsed JSON, so timestamp, loggerName, level and hostName are required; message is optional in the schema and is present on an access line, whose parser keeps the key.",
   "type": "object",
   "required": [
     "timestamp",
     "loggerName",
     "level",
-    "message",
-    "hostName",
-    "user_principal_name",
-    "event_id",
-    "index_class",
-    "policy_rule",
-    "policy",
-    "resource",
-    "resource_kind",
-    "api_kind",
-    "status_class"
+    "hostName"
   ],
   "additionalProperties": true,
   "properties": {
@@ -81,62 +71,16 @@
       "type": "string"
     },
     "http_status": {
-      "type": "integer",
-      "minimum": 0
+      "type": "string",
+      "pattern": "^[0-9]{3}$"
     },
     "response_size": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "access_log_parse_error": {
-      "const": true
-    },
-    "secret_redacted": {
-      "const": true
+      "type": "string",
+      "pattern": "^([0-9]+|-)$"
     },
     "exception": {
       "type": "object",
       "additionalProperties": true
-    },
-    "event_id": {
-      "type": "string",
-      "pattern": "^[^\\s]+$"
-    },
-    "index_class": {
-      "const": "candidate"
-    },
-    "policy_rule": {
-      "enum": [
-        "2b",
-        "3'",
-        "4",
-        "5"
-      ]
-    },
-    "policy": {
-      "const": "policy-v5"
-    },
-    "resource": {
-      "type": "string"
-    },
-    "resource_kind": {
-      "type": "string"
-    },
-    "api_kind": {
-      "type": "string"
-    },
-    "status_class": {
-      "type": "string",
-      "enum": [
-        "ok",
-        "401",
-        "403",
-        "404",
-        "4xx",
-        "5xx",
-        "unparsed",
-        "none"
-      ]
     }
   }
 }
