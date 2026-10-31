@@ -1,5 +1,5 @@
 {
-  "description": "Policy-v5 routing for contract v3 (docs/contracts/polaris-logs.md, ADR-082 Decision 2): twelve rows of built-in Fluent Bit filters (parser, grep, rewrite_tag), first match wins by order, each ending in a tag; the sidecar adds no derived field and does not redact (ADR-082 Decision 3). scripts/test_polaris_logs_contract.py keeps the rows equal to the ADR's table. The tag spellings are placeholders the ADR names; this contract fixes them so the sidecar emits exactly these. Rule 2b -> candidate and rule 7 -> error are placeholder choices of ADR-081.",
+  "description": "Policy-v5 routing for contract v3 (docs/contracts/polaris-logs.md, ADR-082 Decision 2): twelve rows of built-in Fluent Bit filters (parser, grep, rewrite_tag), first match wins by order; a kept record ends in a final tag (polaris.access and polaris.post are intermediate, a grep with Exclude drops); the sidecar adds no derived field and does not redact (ADR-082 Decision 3). scripts/test_polaris_logs_contract.py keeps the rows equal to the ADR's table. The tag spellings are placeholders the ADR names; this contract fixes them so the sidecar emits exactly these. Rule 2b -> candidate and rule 7 -> error are placeholder choices of ADR-081.",
   "policy": "policy-v5",
   "rows": [
     {

@@ -80,6 +80,11 @@ lines are counted nowhere. The final tags are `polaris.error.r1`, `polaris.error
 third the policy rule, so the tag carries what a field used to. The main Fluent Bit routes by
 the tag; whether its input keeps it is open and the observability agreement's (L0b).
 
+Two things are open until the sidecar's smoke run: the last row keys on `message`, so it holds
+only if the access parser leaves `message` on the record (its preserve-key setting); and the
+tag `polaris.error.r7` alone cannot tell an unparsed access line from an unlisted method, so a
+count of it that jumps after a Polaris upgrade is the sign of a parser that stopped matching.
+
 ## A record
 
 A JSON object per line, UTF-8. A reader accepts fields it does not know. The record is what
@@ -174,7 +179,7 @@ A document has no other field; only `window_start`, `lines` and `response_bytes`
 A line that is not an access line has no `http_method`, `http_status`, `user_principal_name` or
 `api_path`, and the sidecar adds no filler: the aggregate counts at least the lines that have
 every group field, and the schema accepts a null or absent group for a transform that writes
-one. Whether the transform skips such a document is open. There is no cap on rows (v2's
+one. Whether the transform skips such a document is open, and the counters below are exact only if it does not (a transform skips by default a document lacking a group field); an error or warning application line has no access group, and neither has an unparsed access line. There is no cap on rows (v2's
 `__other__` is gone): the aggregate holds one document per distinct combination of the groups.
 `api_path` is the raw path, one value per table or namespace, so its cardinality is not known and
 likely high until the observability team's pipeline normalises it. The shortest interval of the
