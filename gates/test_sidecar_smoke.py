@@ -233,6 +233,19 @@ class Builders(unittest.TestCase):
         self.assertTrue(all(m.get("readOnly") for m in helper["volumeMounts"]
                             if m["mountPath"] == "/out"))
 
+    def test_the_restart_deployment_replaces_the_releases_own_sidecar_and_volume(self):
+        source = self.source()
+        pod = source["spec"]["template"]["spec"]
+        pod["initContainers"] = [{"name": "log-sidecar", "image": "release", "restartPolicy": "Always"}]
+        pod["volumes"].append({"name": "log-sidecar-config",
+                               "configMap": {"name": "polaris-log-sidecar"}})
+        source["spec"]["template"]["metadata"]["annotations"] = {"checksum/log-sidecar": "x" * 64}
+        spec = smoke.restart_deployment(source, PINS, self.fragment())["spec"]["template"]["spec"]
+        self.assertEqual([c["name"] for c in spec["initContainers"]].count("log-sidecar"), 1)
+        configs = [v for v in spec["volumes"] if v["name"] == "log-sidecar-config"]
+        self.assertEqual(len(configs), 1)
+        self.assertEqual(configs[0]["configMap"]["name"], smoke.CONFIG_NAME)
+
     def test_the_kill_command_targets_only_the_sidecar(self):
         command = smoke.kill_command("ctx", "ns", "pod-1")
         self.assertIn("helper", command)
