@@ -19,25 +19,10 @@
         "hostName": {
           "type": "keyword"
         },
-        "index_class": {
-          "type": "keyword"
-        },
-        "resource": {
-          "type": "keyword"
-        },
-        "resource_kind": {
-          "type": "keyword"
-        },
-        "api_kind": {
+        "level": {
           "type": "keyword"
         },
         "user_principal_name": {
-          "type": "keyword"
-        },
-        "status_class": {
-          "type": "keyword"
-        },
-        "level": {
           "type": "keyword"
         },
         "lines": {
@@ -46,11 +31,14 @@
         "response_bytes": {
           "type": "long"
         },
-        "min_record_time": {
-          "type": "date"
+        "http_method": {
+          "type": "keyword"
         },
-        "max_record_time": {
-          "type": "date"
+        "http_status": {
+          "type": "long"
+        },
+        "api_path": {
+          "type": "keyword"
         }
       }
     }

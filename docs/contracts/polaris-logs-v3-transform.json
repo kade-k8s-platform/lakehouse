@@ -2,7 +2,7 @@
   "transform": {
     "enabled": true,
     "continuous": true,
-    "description": "Contract v3: lines per hour and group over the candidate and error indices.",
+    "description": "Contract v3: lines per hour and group over the candidate and error indices, raw fields only (ADR-082 Decision 4).",
     "source_index": "polaris-logs-source",
     "target_index": "polaris-logs-aggregate",
     "page_size": 1000,
@@ -28,26 +28,20 @@
       },
       {
         "terms": {
-          "source_field": "index_class",
-          "target_field": "index_class"
+          "source_field": "level",
+          "target_field": "level"
         }
       },
       {
         "terms": {
-          "source_field": "resource",
-          "target_field": "resource"
+          "source_field": "http_method",
+          "target_field": "http_method"
         }
       },
       {
         "terms": {
-          "source_field": "resource_kind",
-          "target_field": "resource_kind"
-        }
-      },
-      {
-        "terms": {
-          "source_field": "api_kind",
-          "target_field": "api_kind"
+          "source_field": "http_status",
+          "target_field": "http_status"
         }
       },
       {
@@ -58,36 +52,20 @@
       },
       {
         "terms": {
-          "source_field": "status_class",
-          "target_field": "status_class"
-        }
-      },
-      {
-        "terms": {
-          "source_field": "level",
-          "target_field": "level"
+          "source_field": "api_path",
+          "target_field": "api_path"
         }
       }
     ],
     "aggregations": {
       "lines": {
         "value_count": {
-          "field": "event_id"
+          "field": "timestamp"
         }
       },
       "response_bytes": {
         "sum": {
           "field": "response_size"
-        }
-      },
-      "min_record_time": {
-        "min": {
-          "field": "timestamp"
-        }
-      },
-      "max_record_time": {
-        "max": {
-          "field": "timestamp"
         }
       }
     }
