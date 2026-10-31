@@ -22,30 +22,36 @@
       bootstrapped is kept.
    d. The claim polaris-logs (ADR-036): ReadWriteMany, its storage class (which must exist)
       and size from `.env`, applied outside any Helm release so an uninstall keeps the logs.
-   e. Polaris 1.6.0 from charts/polaris (ADR-009), with values-lakehouse.yaml and the values
-      from `.env` (the database host, the policy endpoint, and the console's origin, allowed
-      by CORS only while the console is enabled), waited on until rolled out. Its pods write
-      their log files to the claim.
-   f. Datahub's network policies (ADR-048 §4, ADR-066 §4, ADR-071 §5):
+   e. The log sidecar's configuration (ADR-081, ADR-082): charts/polaris-log-sidecar, the
+      ConfigMap polaris-log-sidecar, with the output host and port from
+      `POLARIS_LOG_OUTPUT_HOST` and `POLARIS_LOG_OUTPUT_PORT`. Polaris's pods mount it, so a
+      failure stops the install here. An empty host is said, not a problem: the chart's
+      placeholder resolves nowhere.
+   f. Polaris 1.6.0 from charts/polaris (ADR-009), with values-lakehouse.yaml, the sidecar's
+      polaris-values.yaml and the values from `.env` (the database host, the policy endpoint,
+      the console's origin, allowed by CORS only while the console is enabled, and a
+      checksum of the sidecar chart as a pod annotation), waited on until rolled out. Its
+      pods write their log files to the claim and forward them through the sidecar.
+   g. Datahub's network policies (ADR-048 §4, ADR-066 §4, ADR-071 §5):
       charts/datahub-network-policies, default deny in its namespace, each store and GMS open
       to their labelled clients, datahub-pg to the operator, GMS to the emitters' namespaces and
       the frontend to the ingress controller's, from `.env`.
-   g. Datahub's PostgreSQL: the `Cluster` datahub-pg from charts/datahub-postgres (ADR-066),
+   h. Datahub's PostgreSQL: the `Cluster` datahub-pg from charts/datahub-postgres (ADR-066),
       asynchronous, waited on as polaris-pg is. Its backups go to `DATAHUB_BACKUP_BUCKET` on
       `S3_ENDPOINT` with the key in `datahub-backup-s3`.
-   h. Datahub's Kafka: the StatefulSet datahub-kafka from charts/datahub-kafka (ADR-068), one
+   i. Datahub's Kafka: the StatefulSet datahub-kafka from charts/datahub-kafka (ADR-068), one
       KRaft broker, waited on until rolled out and ready.
-   i. Datahub's OpenSearch: the StatefulSet datahub-opensearch from upstream's chart in
+   j. Datahub's OpenSearch: the StatefulSet datahub-opensearch from upstream's chart in
       charts/datahub-opensearch with its values-lakehouse.yaml (ADR-070), one node, waited on
       until rolled out and ready.
-   j. Datahub (ADR-071 §7): its four Secrets from init-env read for their key names, then
+   k. Datahub (ADR-071 §7): its four Secrets from init-env read for their key names, then
       upstream's chart in charts/datahub with its values-lakehouse.yaml, through helm's --wait:
       the blocking system-update Job completes before GMS and the frontend start, both are
       ready, and the non-blocking Job completes. An empty DATAHUB_EMITTER_NAMESPACE_LABEL is
       said, not a problem. Its ingestion CronJob (ADR-076 §2) gets Polaris's URI from
       `NS_CATALOG_POLARIS` and the catalogs of DATAHUB_INGEST_POLARIS_CATALOGS, each name
       checked; with none it is suspended, and the install says so.
-   k. Datahub's Polaris principal (ADR-076 §3): `datahub-polaris-principal` from init-env read
+   l. Datahub's Polaris principal (ADR-076 §3): `datahub-polaris-principal` from init-env read
       for its key names, then a short-lived pod in Datahub's namespace on the ingestion image,
       the Secret mounted and root's credential on stdin, gets a token as root, creates
       `datahub_ingest` (one already there is kept), resets its credentials to the Secret's,
@@ -54,7 +60,8 @@
    a. The log batch (ADR-036): charts/polaris-log-batch with the image built from this
       checkout (batch_image), pulled from `IMAGE_REGISTRY` or, when it is empty, the GitHub
       Container Registry the release workflow pushes it to (ADR-042); then the CronJob read
-      back to check it runs that image. Its failure stops the install.
+      back to check it runs that image. Its failure stops the install. It stays until the
+      sidecar replaces it (L7).
    b. The console, when `POLARIS_CONSOLE_ENABLED=true` (ADR-028): charts/polaris-console with
       its values-lakehouse.yaml and the URL at which the browser reaches Polaris, waited on
       until rolled out. A maintainer tool, never part of how Polaris operates: its problems
@@ -263,6 +270,10 @@ BATCH_IMAGE_FILES = ("Dockerfile", "polaris_log_batch.py")
 # from while `IMAGE_REGISTRY` is empty (ADR-042, ADR-074).
 DEFAULT_IMAGE_REGISTRY = "ghcr.io/kade-k8s-platform/lakehouse"
 POLARIS_CHART = os.path.join(ROOT, "charts", "polaris")
+# The log sidecar (ADR-081, ADR-082): its chart, and the values fragment that adds it to Polaris.
+SIDECAR = "polaris-log-sidecar"
+SIDECAR_CHART = os.path.join(ROOT, "charts", SIDECAR)
+SIDECAR_FRAGMENT = os.path.join(SIDECAR_CHART, "polaris-values.yaml")
 POLARIS_VALUES = os.path.join(POLARIS_CHART, "values-lakehouse.yaml")
 CONSOLE = "polaris-console"
 CONSOLE_CHART = os.path.join(ROOT, "charts", "polaris-console")
@@ -771,11 +782,55 @@ def console_enabled(env):
     return env.get("POLARIS_CONSOLE_ENABLED", "") == "true"
 
 
+def sidecar_port(env):
+    """POLARIS_LOG_OUTPUT_PORT as an int, None while empty; ValueError outside 1 to 65535."""
+    raw = env.get("POLARIS_LOG_OUTPUT_PORT", "").strip()
+    if not raw:
+        return None
+    if not raw.isdigit() or not 1 <= int(raw) <= 65535:
+        raise ValueError(f"POLARIS_LOG_OUTPUT_PORT is {raw!r}: set a port from 1 to 65535 "
+                         "in .env, or leave it empty")
+    return int(raw)
+
+
+def sidecar_values(env):
+    """The sidecar chart's values from `.env`: {} while both variables are empty (the chart's
+    placeholder host and port stand), else only the keys that are set."""
+    output = {}
+    host = env.get("POLARIS_LOG_OUTPUT_HOST", "").strip()
+    if host:
+        output["host"] = host
+    port = sidecar_port(env)
+    if port is not None:
+        output["port"] = port
+    return {"output": output} if output else {}
+
+
+def sidecar_checksum(env, directory=SIDECAR_CHART):
+    """A SHA-256 over the names and contents of every file of the sidecar chart but its values
+    fragment (which changes the pod spec and rolls the pods itself), then the chart's values
+    from `.env`: Fluent Bit reads its ConfigMap at start, so a change must roll Polaris's pods
+    (ADR-081). Of the chart's inputs, not of the rendered ConfigMap: no YAML library here."""
+    digest = hashlib.sha256()
+    names = sorted(os.path.relpath(os.path.join(top, n), directory)
+                   for top, _, files in os.walk(directory) for n in files)
+    for name in names:
+        if name == os.path.basename(SIDECAR_FRAGMENT):
+            continue
+        with open(os.path.join(directory, name), "rb") as f:
+            data = f.read()
+        digest.update(f"{name}\0{len(data)}\0".encode() + data)
+    digest.update(json.dumps(sidecar_values(env), sort_keys=True).encode())
+    return digest.hexdigest()
+
+
 def polaris_values(env):
-    """The chart values that come from `.env`, on top of charts/polaris/values-lakehouse.yaml.
-    Polaris allows the console's origin only while the console is enabled (ADR-028)."""
+    """The chart values that come from `.env`, on top of charts/polaris/values-lakehouse.yaml
+    and the sidecar's fragment. Polaris allows the console's origin only while the console is
+    enabled (ADR-028); the pods carry a checksum of the sidecar chart (ADR-081)."""
     values = {"advancedConfig": {"quarkus.datasource.jdbc.url": jdbc_url(env),
-                                 "polaris.authorization.opa.policy-uri": env["POLARIS_OPA_URL"]}}
+                                 "polaris.authorization.opa.policy-uri": env["POLARIS_OPA_URL"]},
+              "podAnnotations": {"checksum/log-sidecar": sidecar_checksum(env)}}
     if console_enabled(env) and env.get("POLARIS_CONSOLE_ORIGIN"):
         values["cors"] = {"enabled": True, "allowedOrigins": [env["POLARIS_CONSOLE_ORIGIN"]]}
     return values
@@ -981,9 +1036,41 @@ def logs_claim(env, run, dry_run=False):
                 else f"Step 1: {what}."]
 
 
+def log_sidecar(env, run, dry_run=False):
+    """Step 1, after the log claim and before Polaris: the sidecar's ConfigMap from
+    charts/polaris-log-sidecar, the output from `.env` (ADR-081, ADR-082). Polaris's pods mount
+    it, so a failure stops the install. An empty host is a note, not a problem. Returns
+    (problems, notes); a bad port makes no call."""
+    try:
+        values = sidecar_values(env)
+    except ValueError as e:
+        return [str(e)], []
+    namespace, context = env["NS_CATALOG_POLARIS"], env["KUBE_CONTEXT"]
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(values, f)
+    try:
+        helm = ["helm", "--kube-context", context, "-n", namespace, "upgrade", "--install",
+                SIDECAR, SIDECAR_CHART, "-f", f.name]
+        code, out = run(helm + (["--dry-run=server"] if dry_run else []))
+    finally:
+        os.unlink(f.name)
+    if code != 0:
+        return [f"helm upgrade {SIDECAR} in {namespace} failed: {out.strip()}"], []
+    output = values.get("output", {})
+    if "host" in output:
+        where = f"{output['host']}:{output.get('port', 'the default port')}"
+    else:
+        where = ("the chart's placeholder main-fluent-bit-standin, which resolves nowhere on "
+                 "a target cluster: POLARIS_LOG_OUTPUT_HOST is empty")
+    what = (f"the log sidecar's configuration (ConfigMap {SIDECAR}) in {namespace}, "
+            f"forwarding to {where}")
+    return [], [f"Step 1: {what}, server-side dry-run passed." if dry_run
+                else f"Step 1: {what}."]
+
+
 def polaris(env, run, dry_run=False):
-    """Step 1, last: Polaris from charts/polaris with values-lakehouse.yaml and the values from
-    `.env`, waited on until its rollout is done. Returns (problems, notes)."""
+    """Step 1, last: Polaris from charts/polaris with values-lakehouse.yaml, the sidecar's
+    fragment and the values from `.env`, waited on until its rollout is done. Returns (problems, notes)."""
     namespace, context = env["NS_CATALOG_POLARIS"], env["KUBE_CONTEXT"]
     code, out = run(["kubectl", "--context", context, "-n", namespace, "get", "secret",
                      *POLARIS_SECRETS, "-o", "name"])
@@ -994,7 +1081,8 @@ def polaris(env, run, dry_run=False):
         json.dump(polaris_values(env), f)
     try:
         helm = ["helm", "--kube-context", context, "-n", namespace, "upgrade", "--install",
-                POLARIS, POLARIS_CHART, "-f", POLARIS_VALUES, "-f", f.name]
+                POLARIS, POLARIS_CHART, "-f", POLARIS_VALUES, "-f", SIDECAR_FRAGMENT,
+                "-f", f.name]
         code, out = run(helm + (["--dry-run=server"] if dry_run else []))
     finally:
         os.unlink(f.name)
@@ -1075,7 +1163,8 @@ def console(env, run, dry_run=False):
 
 def install(env, run, supported, dry_run):
     """Every step in order; the first step with problems stops the rest. The console's
-    problems are notes: it never fails a release (ADR-028); the batch's stop it (ADR-037)."""
+    problems are notes: it never fails a release (ADR-028); the batch's and the sidecar's stop it
+    (ADR-037, ADR-082)."""
     notes = []
     for step in (lambda: check_preconditions(env, run, supported),
                  lambda: network_policies(env, run, dry_run),
@@ -1083,6 +1172,7 @@ def install(env, run, supported, dry_run):
                  lambda: endpoints_answer(env, run),
                  lambda: bootstrap(env, run, dry_run=dry_run),
                  lambda: logs_claim(env, run, dry_run),
+                 lambda: log_sidecar(env, run, dry_run),
                  lambda: polaris(env, run, dry_run),
                  lambda: datahub_network_policies(env, run, dry_run),
                  lambda: datahub_postgres(env, run, dry_run),
