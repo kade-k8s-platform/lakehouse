@@ -244,7 +244,7 @@ class Builders(unittest.TestCase):
     def test_gate_calls_it_once(self):
         with open(os.path.join(HERE, "gate.py"), encoding="utf-8") as f:
             text = f.read()
-        self.assertEqual(len(re.findall(r"^import sidecar_smoke$", text, re.M)), 1)
+        self.assertEqual(len(re.findall(r"^import sidecar_smoke\b", text, re.M)), 1)
         self.assertEqual(text.count("sidecar_smoke.run("), 1)
 
 

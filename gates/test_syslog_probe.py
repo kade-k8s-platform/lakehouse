@@ -578,6 +578,7 @@ class Wiring(unittest.TestCase):
         import gate
         with mock.patch.object(gate, "check_logs", return_value=own), \
                 mock.patch.object(gate.syslog_probe, "run", return_value=probed) as syslog, \
+                mock.patch.object(gate.sidecar_smoke, "run", return_value=([], [])), \
                 mock.patch.object(gate.release, "load_env", return_value=ENV), \
                 mock.patch("builtins.print") as printed:
             code = gate.main(["gate.py", "check-logs"])
