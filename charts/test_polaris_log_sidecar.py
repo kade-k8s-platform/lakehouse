@@ -550,10 +550,19 @@ class Untouched(unittest.TestCase):
                                "charts/polaris"], check=False)
         self.assertEqual(diff.returncode, 0, "charts/polaris differs from origin/main")
 
-    def test_nothing_installs_it_yet(self):
-        # L4 adds the install step and flips this test in its own commit.
+    def test_the_install_installs_it_and_passes_the_fragment(self):
         with open(os.path.join(ROOT, "install", "release.py")) as f:
-            self.assertNotIn(NAME, f.read())
+            text = f.read()
+        self.assertIn(NAME, text)
+        self.assertIn("polaris-values.yaml", text)
+        self.assertEqual(release.SIDECAR_CHART, CHART)
+        self.assertEqual(release.SIDECAR_FRAGMENT, FRAGMENT)
+
+    def test_the_pod_carries_the_checksum_annotation(self):
+        annotations = one(polaris_docs(), "Deployment")["spec"]["template"]["metadata"][
+            "annotations"]
+        self.assertRegex(annotations["checksum/log-sidecar"], r"^[0-9a-f]{64}$")
+        self.assertIn("checksum/config", annotations)
 
 
 class Kubeconform(unittest.TestCase):
