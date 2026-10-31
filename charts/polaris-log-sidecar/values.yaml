@@ -14,11 +14,23 @@ configMapName: polaris-log-sidecar
 # Quarkus's `max-length`, above the 15 KB and 40 KB exception lines the contract measured so that
 # a line is not cut into invalid JSON; it stays below the input's bufferMaxSize. queueLength is
 # the depth of Quarkus's async queue, which drops when full instead of blocking a request thread.
+# appName is the RFC 5424 APP-NAME (the syslog `ident`); the Java path Quarkus sends by default
+# is 48 octets of noise. Quarkus counts the header in maxLength: the whole frame body is bounded,
+# 165 octets of envelope (about 41 fewer with a short appName) and the 40 KB worst line included.
 syslog:
   listen: 127.0.0.1
   port: 5140
+  appName: polaris
   maxLength: 65536
   queueLength: 512
+
+# ADR-082's routing. tagPrefix is the input's tag and the first segment of every stage and final
+# tag (polaris.error.r1, polaris.candidate.r4, ...). Each rewrite_tag has its own emitter with a
+# memory buffer of emitterMemBufLimit (ten of them; Fluent Bit's default of 10M each would be 100M
+# of a 128Mi sidecar).
+routing:
+  tagPrefix: polaris
+  emitterMemBufLimit: 1MB
 
 # The TCP input's caps. memBufLimit pauses the input, which backs up Polaris's queue until it
 # discards. No storage.* anywhere: the buffer is memory only.
