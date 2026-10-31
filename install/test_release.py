@@ -1899,8 +1899,14 @@ class LogSidecar(unittest.TestCase):
         self.assertIn("POLARIS_LOG_OUTPUT_HOST is empty", text)
         self.assertIn("main-fluent-bit-standin", text)
 
+    def test_a_port_without_a_host_is_named_with_the_placeholder(self):
+        calls = FakeSidecar()
+        _, notes = self.step(calls, {**BOOTSTRAP_ENV, "POLARIS_LOG_OUTPUT_PORT": "24225"})
+        self.assertEqual(calls.values, [{"output": {"port": 24225}}])
+        self.assertIn("port 24225", "\n".join(notes))
+
     def test_a_port_that_is_not_a_port_stops_before_helm(self):
-        for port in ("abc", "0", "70000"):
+        for port in ("abc", "0", "70000", "\u0665\u0661\u0664\u0660"):
             with self.subTest(port=port):
                 calls = FakeSidecar()
                 problems, _ = self.step(calls, {**self.ENV, "POLARIS_LOG_OUTPUT_PORT": port})

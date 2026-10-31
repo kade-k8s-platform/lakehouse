@@ -787,7 +787,7 @@ def sidecar_port(env):
     raw = env.get("POLARIS_LOG_OUTPUT_PORT", "").strip()
     if not raw:
         return None
-    if not raw.isdigit() or not 1 <= int(raw) <= 65535:
+    if not (raw.isascii() and raw.isdigit()) or not 1 <= int(raw) <= 65535:
         raise ValueError(f"POLARIS_LOG_OUTPUT_PORT is {raw!r}: set a port from 1 to 65535 "
                          "in .env, or leave it empty")
     return int(raw)
@@ -1060,8 +1060,9 @@ def log_sidecar(env, run, dry_run=False):
     if "host" in output:
         where = f"{output['host']}:{output.get('port', 'the default port')}"
     else:
-        where = ("the chart's placeholder main-fluent-bit-standin, which resolves nowhere on "
-                 "a target cluster: POLARIS_LOG_OUTPUT_HOST is empty")
+        where = (f"the chart's placeholder main-fluent-bit-standin, port "
+                 f"{output.get('port', 'by default')}, which resolves nowhere on a target "
+                 f"cluster: POLARIS_LOG_OUTPUT_HOST is empty")
     what = (f"the log sidecar's configuration (ConfigMap {SIDECAR}) in {namespace}, "
             f"forwarding to {where}")
     return [], [f"Step 1: {what}, server-side dry-run passed." if dry_run
