@@ -1,6 +1,6 @@
 # ADR-082: The Polaris log sidecar uses built-in Fluent Bit filters only, and derived fields are left to OpenSearch
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-30
 - **Related:** ADR-000, ADR-001, ADR-009, ADR-016, ADR-024, ADR-031, ADR-050, ADR-081
 
