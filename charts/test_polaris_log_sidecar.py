@@ -145,7 +145,7 @@ def parser_regex(name):
     return re.compile(text.encode())
 
 
-def expected_filters(prefix, limit="1MB"):
+def expected_filters(prefix, limit):
     """ADR-082's twelve rows as fifteen filters, in the ADR's order: (name, match, settings)."""
     tag, access, post = prefix, f"{prefix}.access", f"{prefix}.post"
     err, cand = f"{prefix}.error", f"{prefix}.candidate"
@@ -330,7 +330,8 @@ class Config(unittest.TestCase):
             self.assertNotIn("lua", text.lower())
 
     def test_the_twelve_rows_in_order(self):
-        self.assertEqual(simplified(self.cfg["pipeline"]["filters"]), expected_filters("polaris"))
+        self.assertEqual(simplified(self.cfg["pipeline"]["filters"]),
+                         expected_filters("polaris", self.values["routing"]["emitterMemBufLimit"]))
 
     def test_the_order_dependent_pairs(self):
         rules = [(f["match"], f.get("rule", f.get("exclude", f.get("parser"))))

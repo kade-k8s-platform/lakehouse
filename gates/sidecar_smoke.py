@@ -173,7 +173,7 @@ def restart_deployment(source, pins, fragment, name="polaris-syslog-probe-c"):
     return dep
 
 
-def judge(files, prefix=PREFIX, burst=driver.BURST_COUNT, limit="1MB"):
+def judge(files, prefix=PREFIX, burst=driver.BURST_COUNT, limit="8MB"):
     """The checks of part 1 on `files` ({tag: [record]}); returns (problems, notes)."""
     problems, notes = [], []
     where = {}

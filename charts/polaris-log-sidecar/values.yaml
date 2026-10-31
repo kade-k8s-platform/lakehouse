@@ -27,10 +27,11 @@ syslog:
 # ADR-082's routing. tagPrefix is the input's tag and the first segment of every stage and final
 # tag (polaris.error.r1, polaris.candidate.r4, ...). Each rewrite_tag has its own emitter with a
 # memory buffer of emitterMemBufLimit (ten of them; Fluent Bit's default of 10M each would be 100M
-# of a 128Mi sidecar).
+# of a 128Mi sidecar). 1MB lost lines of a 2000-line burst of 1 KiB lines in the smoke run (742
+# arrived), so 8MB, the input's own limit; the emitters fill only as far as a burst needs.
 routing:
   tagPrefix: polaris
-  emitterMemBufLimit: 1MB
+  emitterMemBufLimit: 8MB
 
 # The TCP input's caps. memBufLimit pauses the input, which backs up Polaris's queue until it
 # discards. No storage.* anywhere: the buffer is memory only.
