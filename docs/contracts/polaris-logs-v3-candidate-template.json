@@ -70,41 +70,12 @@
           "type": "long"
         },
         "response_size": {
-          "type": "long"
-        },
-        "access_log_parse_error": {
-          "type": "boolean"
-        },
-        "secret_redacted": {
-          "type": "boolean"
+          "type": "long",
+          "ignore_malformed": true
         },
         "exception": {
           "type": "object",
           "enabled": false
-        },
-        "event_id": {
-          "type": "keyword"
-        },
-        "index_class": {
-          "type": "keyword"
-        },
-        "policy_rule": {
-          "type": "keyword"
-        },
-        "policy": {
-          "type": "keyword"
-        },
-        "resource": {
-          "type": "keyword"
-        },
-        "resource_kind": {
-          "type": "keyword"
-        },
-        "api_kind": {
-          "type": "keyword"
-        },
-        "status_class": {
-          "type": "keyword"
         }
       }
     },
