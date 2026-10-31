@@ -9,8 +9,9 @@ ADR-081).
 **Status.** Amended by ADR-082: the sidecar uses Fluent Bit's built-in filters only (`parser`,
 `grep`, `rewrite_tag`), adds no derived field and does not redact. The syslog route was
 measured on 2026-10-30 (Polaris 1.6.0, Fluent Bit 5.1.4, the kind gate) and the facts are in
-**The syslog input** below. What is still open is said where it matters; the tag spellings are
-placeholders that this contract fixes so that the sidecar emits exactly these. The example lines
+**The syslog input** below. The routing is what the merged sidecar chart emits, and its smoke
+step passed on the gate. What is still open is said where it matters; the tag spellings are
+placeholders that this contract fixes to the chart's. The example lines
 were measured on 2026-10-11 from Polaris 1.6.0 where the example says so, and constructed from
 them otherwise (`"source"` in the routing file). Every Polaris upgrade re-checks this file
 (ADR-009).
@@ -60,7 +61,7 @@ filter, key, regex, action and target.
 |---|---|---|---|
 | 1 | level `ERROR` or `WARN` | `rewrite_tag` `$level ^(ERROR\|WARN)$` | `polaris.error.r1` |
 | access line | `loggerName` is `io.quarkus.http.access-log` | `rewrite_tag` | `polaris.access` |
-| 2b | from `IcebergExceptionMapper` or `PolarisServiceImpl` | `rewrite_tag` | `polaris.candidate.r2b` (placeholder: ADR-081 named no index) |
+| 2b | from `IcebergExceptionMapper` or `PolarisServiceImpl` (the logger name ends in one of them) | `rewrite_tag` `$loggerName (^\|\.)(IcebergExceptionMapper\|PolarisServiceImpl)$` | `polaris.candidate.r2b` (placeholder: ADR-081 named no index) |
 | 2a, 2c | any other record with a `loggerName` (commit timing, other loggers) | `grep` `Exclude loggerName .+` | dropped |
 | 7 | what remains has no `loggerName`: its JSON did not parse | `rewrite_tag` `$message .+` | `polaris.error.r7` (placeholder: an unexpected line is worth keeping longer) |
 | access: parse | an access line's `message` | `parser` (regex, no `Types`) | the six strings of **A record** |
@@ -69,21 +70,25 @@ filter, key, regex, action and target.
 | 4 | PUT, DELETE or PATCH | `rewrite_tag` `$http_method ^(PUT\|DELETE\|PATCH)$` | `polaris.candidate.r4` |
 | 6 | a successful GET or HEAD | `grep` `Exclude http_method ^(GET\|HEAD)$` | dropped |
 | 5 and other POST | POST, then a path under `/api/management/` | `rewrite_tag` to `polaris.post`, then `rewrite_tag` `$api_path ^/api/management/`, then `grep` `Exclude api_path .+` | `polaris.candidate.r5`, or dropped |
-| 3 (unparsed), 7 (other method) | what remains of `polaris.access`: an access line that did not parse, or a method not listed | `rewrite_tag` `$message .+` | `polaris.error.r7` |
+| 3 (unparsed), 7 (other method) | what remains of `polaris.access`: an access line that did not parse, or a method not listed | `rewrite_tag` `$message .+` | `polaris.error.r7a` |
 
 First match wins, so a failed PUT, DELETE, PATCH or POST is an error line (`polaris.error.r3`),
 never a candidate line. The policy's rule 3 for an unparsed access line and its rule 7 for
-another method are one tag, `polaris.error.r7`, because one rule cannot tell them apart. Dropped
+another method are one tag, `polaris.error.r7a`, because one rule cannot tell them apart; it is
+not `r7`, which is a record with no `loggerName`. Before row 1 the JSON `parser` (`polaris-json`)
+reads `message` of every record on the input tag, and a line it cannot parse keeps its text. Dropped
 lines are counted nowhere. The final tags are `polaris.error.r1`, `polaris.error.r3`,
-`polaris.error.r7`, `polaris.candidate.r2b`, `polaris.candidate.r3p`, `polaris.candidate.r4` and
+`polaris.error.r7`, `polaris.error.r7a`, `polaris.candidate.r2b`, `polaris.candidate.r3p`, `polaris.candidate.r4` and
 `polaris.candidate.r5`; the second segment names the index (`error` or `candidate`) and the
 third the policy rule, so the tag carries what a field used to. The main Fluent Bit routes by
 the tag; whether its input keeps it is open and the observability agreement's (L0b).
 
-Two things are open until the sidecar's smoke run: the last row keys on `message`, so it holds
-only if the access parser leaves `message` on the record (its preserve-key setting); and the
-tag `polaris.error.r7` alone cannot tell an unparsed access line from an unlisted method, so a
-count of it that jumps after a Polaris upgrade is the sign of a parser that stopped matching.
+The chart's output takes a tag by `polaris.*.*`: stage tags have two segments and final tags
+three, so a record no row took (a JSON object with no `message`, `level` or `loggerName`, or an
+access line with an empty `message`) stays off the wire. A status of 600 or above does not reach
+row 3; Quarkus's access log has none. Open: `polaris.error.r7a` alone cannot tell an unparsed
+access line from an unlisted method, so a count of it that jumps after a Polaris upgrade is the
+sign of a parser that stopped matching.
 
 ## A record
 
@@ -95,13 +100,13 @@ no other field and redacts nothing (ADR-082 Decision 3): a line is uploaded as P
 | Field | Type | In | What |
 |---|---|---|---|
 | `timestamp`, `loggerName`, `level`, `hostName` | string | candidate, required | Polaris's own. `timestamp` has nanoseconds and `Z`; `hostName` is the pod name |
-| `message` | string | both; required in error | Polaris's own. In the candidate index it is optional because an access line keeps it only if the parser does; in the error index it is the one required field, because a record whose JSON did not parse holds only the cut text in it |
+| `message` | string | both; required in error | Polaris's own. The access parser keeps it (`preserve_key`), so it is on every access line; it is optional in the candidate schema, and in the error index it is the one required field, because a record whose JSON did not parse holds only the cut text in it |
 | `sequence`, `threadName`, `threadId`, `mdc`, `exception` | | both, optional | Polaris's own; `mdc` is `{}` outside a request and holds `requestId` (and `realmId`) inside; `exception` is an object in the shape contract v2 records |
 | `client_ip`, `user_principal_name`, `http_method`, `api_path`, `http_status`, `response_size` | string | access lines | From the regex parser: `http_status` is three digits, `response_size` is digits or `-` where the log has `-`, `user_principal_name` is `-` for no caller |
 | `loggerClassName`, `ndc`, `processName`, `processId` | | both, optional | Present, kept, not indexed and not part of the contract's fields |
 
-A record whose JSON did not parse (a line cut at `max-length`) takes `polaris.error.r7`. It
-has no `loggerName` and no `timestamp`, so it is not in the aggregate, and the syslog envelope
+A record whose JSON did not parse (a line cut at `max-length`) takes `polaris.error.r7`, its text in `message`
+(the smoke step proved that `message` survives a failed parse). It has no `loggerName` and no `timestamp`, so it is not in the aggregate, and the syslog envelope
 keys may stay on it.
 
 Example: a request without a token, row 3, error index (measured 2026-10-11, re-dated; wrapped
@@ -134,19 +139,20 @@ values are the sidecar's, not Polaris's alone.
   unique, and `(hostName, sequence)` is unique. `mdc` is `{}` outside a request and
   `{"requestId": ...}` inside; `loggerName` is `io.quarkus.http.access-log` on access lines.
 - **A BOM.** Every syslog message starts with a UTF-8 BOM; Fluent Bit's input keeps it in
-  `message`. The sidecar's parser handles it (which regex spelling works is open); the BOM is on
-  the wire and not part of a record.
+  `message`. The sidecar's `polaris-syslog` parser takes an optional BOM group before `message`
+  (`(?:\xEF\xBB\xBF)?`, accepted by Fluent Bit's regex engine, proved by the smoke step); the
+  BOM is on the wire and not part of a record.
 - **`max-length` counts the whole frame**, about 165 octets of envelope more than the JSON (a
   declared 642 for a 477-octet body). A record over `max-length` minus the envelope is cut and
   its JSON is invalid: it has no `loggerName`, takes row 7 and is kept in the error index as
   `polaris.error.r7` with the cut text in `message`. That `message` survives a failed parse is
-  not yet proved.
+  proved by the smoke step.
 - **The envelope.** Its app-name is the cut Java path
   (`/usr/lib/jvm/java-21-openjdk-21.0.11.0.10-2.el9.`) and its procid `1`; the setting
   `quarkus.log.syslog.app-name` gives a stable value, which was not tried. No reader may rely on
   the app-name. Fluent Bit's keys for the envelope are `date`, `extradata`, `host`, `ident`,
   `message`, `msgid`, `pid`, `pri` and `time`; with `reserve_data false` they are dropped when
-  the JSON parses and stay on a record whose JSON did not (open).
+  the JSON parses and stay on a record whose JSON did not.
 
 ## Derived by OpenSearch, or not done
 

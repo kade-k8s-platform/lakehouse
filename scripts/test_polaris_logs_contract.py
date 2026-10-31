@@ -148,7 +148,8 @@ class Router(unittest.TestCase):
                     continue
                 self.assertRegex(to, FINAL_TAG)
                 final.add(to)
-        self.assertEqual(final, set(v3("routing.json")["tags"].values()))
+        routing = v3("routing.json")
+        self.assertEqual(final, set(routing["tags"].values()) | {routing["unmatched_access_tag"]})
 
     def test_tags_and_dropped_cover_the_policy_rules(self):
         routing = v3("routing.json")
@@ -157,6 +158,7 @@ class Router(unittest.TestCase):
         self.assertEqual(sorted(routing["tags"].values()), sorted([
             "polaris.candidate.r2b", "polaris.candidate.r3p", "polaris.candidate.r4",
             "polaris.candidate.r5", "polaris.error.r1", "polaris.error.r3", "polaris.error.r7"]))
+        self.assertEqual(routing["unmatched_access_tag"], "polaris.error.r7a")
 
     def test_every_rule_has_an_example(self):
         seen = {e["rule"] for e in v3("routing.json")["examples"]}
@@ -171,7 +173,8 @@ class Router(unittest.TestCase):
                     self.assertIsNone(ex["tag"])
                     self.assertIn(ex["rule"], routing["dropped"])
                 else:
-                    want = ("polaris.error.r7" if ex.get("folded") else routing["tags"][ex["rule"]])
+                    want = (routing["unmatched_access_tag"] if ex.get("unmatched")
+                            else routing["tags"][ex["rule"]])
                     self.assertEqual(ex["tag"], want)
                     self.assertEqual(ex["tag"].split(".")[1], ex["route"])
 
@@ -180,10 +183,11 @@ class Router(unittest.TestCase):
         self.assertEqual(route(by_name["PUT 409"]["input"]), ("3", "error"))
         self.assertEqual(by_name["PUT 409"]["tag"], "polaris.error.r3")
 
-    def test_an_unparsed_access_line_folds_into_r7(self):
-        [ex] = [e for e in v3("routing.json")["examples"] if e["name"] == "unparsable access line"]
-        self.assertIs(ex["folded"], True)
-        self.assertEqual(ex["tag"], "polaris.error.r7")
+    def test_an_unmatched_access_line_is_r7a(self):
+        by_name = {e["name"]: e for e in v3("routing.json")["examples"]}
+        for name in ("unparsable access line", "OPTIONS 200"):
+            self.assertIs(by_name[name]["unmatched"], True, name)
+            self.assertEqual(by_name[name]["tag"], "polaris.error.r7a", name)
 
     def test_a_line_without_loggername_is_r7(self):
         self.assertEqual(route({"message": '{"timestamp":"2026-10-30T19:15:02.53'}), ("7", "error"))
@@ -270,8 +274,7 @@ class Shapes(unittest.TestCase):
         self.assertEqual(contract.problems(out, self.schema("candidate")), [])
 
     def test_a_cut_record_is_an_error_record(self):
-        [ex] = [e for e in self.kept() if e["tag"] == "polaris.error.r7" and not e.get("folded")
-                and "loggerName" not in e["output"]]
+        [ex] = [e for e in self.kept() if e["tag"] == "polaris.error.r7" and "loggerName" not in e["output"]]
         self.assertEqual(ex["output"]["message"], '{"timestamp":"2026-10-30T19:15:02.53')
         self.assertEqual(contract.problems(ex["output"], self.schema("error")), [])
         self.assertTrue(contract.problems(ex["output"], self.schema("candidate")))
@@ -504,6 +507,7 @@ class Document(unittest.TestCase):
         for tag in v3("routing.json")["tags"].values():
             self.assertIn(tag, text)
         self.assertIn("polaris.error.r7", text)
+        self.assertIn(v3("routing.json")["unmatched_access_tag"], text)
 
     def test_derived_fields_are_left_to_opensearch(self):
         text = self.v3_text()

@@ -1,5 +1,5 @@
 {
-  "description": "Policy-v5 routing for contract v3 (docs/contracts/polaris-logs.md, ADR-082 Decision 2): twelve rows of built-in Fluent Bit filters (parser, grep, rewrite_tag), first match wins by order; a kept record ends in a final tag (polaris.access and polaris.post are intermediate, a grep with Exclude drops); the sidecar adds no derived field and does not redact (ADR-082 Decision 3). scripts/test_polaris_logs_contract.py keeps the rows equal to the ADR's table. The tag spellings are placeholders the ADR names; this contract fixes them so the sidecar emits exactly these. Rule 2b -> candidate and rule 7 -> error are placeholder choices of ADR-081.",
+  "description": "Policy-v5 routing for contract v3 (docs/contracts/polaris-logs.md, ADR-082 Decision 2): twelve rows of built-in Fluent Bit filters (parser, grep, rewrite_tag), first match wins by order; a kept record ends in a final tag (polaris.access and polaris.post are intermediate, a grep with Exclude drops); the sidecar adds no derived field and does not redact (ADR-082 Decision 3). scripts/test_polaris_logs_contract.py keeps the rows equal to the ADR's table. The tag spellings are placeholders the ADR names; this contract fixes them to what the merged sidecar chart emits. Rule 7 (no loggerName) is polaris.error.r7; an access line the access regex did not parse, or whose method no row lists, is polaris.error.r7a. Rule 2b -> candidate and rule 7 -> error are placeholder choices of ADR-081.",
   "policy": "policy-v5",
   "rows": [
     {
@@ -35,7 +35,7 @@
           "filter": "rewrite_tag",
           "match": "polaris",
           "key": "loggerName",
-          "regex": "^org\\.apache\\.polaris\\.service\\.(exception\\.IcebergExceptionMapper|admin\\.PolarisServiceImpl)$",
+          "regex": "(^|\\.)(IcebergExceptionMapper|PolarisServiceImpl)$",
           "action": "rewrite",
           "to": "polaris.candidate.r2b"
         }
@@ -170,7 +170,7 @@
           "key": "message",
           "regex": ".+",
           "action": "rewrite",
-          "to": "polaris.error.r7"
+          "to": "polaris.error.r7a"
         }
       ]
     }
@@ -661,8 +661,8 @@
       "name": "unparsable access line",
       "rule": "3",
       "route": "error",
-      "tag": "polaris.error.r7",
-      "folded": true,
+      "tag": "polaris.error.r7a",
+      "unmatched": true,
       "source": "constructed",
       "input": {
         "timestamp": "2026-10-30T12:40:08.753600155Z",
@@ -1028,7 +1028,8 @@
       "name": "OPTIONS 200",
       "rule": "7",
       "route": "error",
-      "tag": "polaris.error.r7",
+      "tag": "polaris.error.r7a",
+      "unmatched": true,
       "source": "constructed",
       "input": {
         "timestamp": "2026-10-30T12:40:16.753600155Z",
@@ -1086,5 +1087,6 @@
         "message": "{\"timestamp\":\"2026-10-30T19:15:02.53"
       }
     }
-  ]
+  ],
+  "unmatched_access_tag": "polaris.error.r7a"
 }

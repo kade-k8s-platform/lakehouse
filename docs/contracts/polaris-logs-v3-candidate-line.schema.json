@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Polaris log contract v3: one candidate line",
-  "description": "A record of the candidate index (polaris-logs-candidate-*), as the sidecar hands it to the main Fluent Bit: Polaris 1.6.0's JSON as the sidecar's parser left it (values keep their JSON types) plus, on an access line, six strings from the regex parser: client_ip, user_principal_name, http_method, api_path, http_status, response_size. The sidecar adds no other field and does not redact (docs/contracts/polaris-logs.md, ADR-082). Unknown fields are accepted: loggerClassName, ndc, processName, processId and the syslog envelope keys are present and not indexed. Every candidate record came from parsed JSON, so timestamp, loggerName, level and hostName are required; message is optional because an access line keeps it only if the parser does.",
+  "description": "A record of the candidate index (polaris-logs-candidate-*), as the sidecar hands it to the main Fluent Bit: Polaris 1.6.0's JSON as the sidecar's parser left it (values keep their JSON types) plus, on an access line, six strings from the regex parser: client_ip, user_principal_name, http_method, api_path, http_status, response_size. The sidecar adds no other field and does not redact (docs/contracts/polaris-logs.md, ADR-082). Unknown fields are accepted: loggerClassName, ndc, processName, processId and the syslog envelope keys are present and not indexed. Every candidate record came from parsed JSON, so timestamp, loggerName, level and hostName are required; message is optional in the schema and is present on an access line, whose parser keeps the key.",
   "type": "object",
   "required": [
     "timestamp",
