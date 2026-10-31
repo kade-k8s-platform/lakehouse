@@ -1,7 +1,8 @@
 # The Fluent Bit sidecar of Polaris (ADR-081, ADR-082): its ConfigMap (a syslog input on
 # localhost, the routing of policy v5 by built-in parser, grep and rewrite_tag filters, a forward
 # output to the main Fluent Bit) and, in polaris-values.yaml,
-# the values that add it to Polaris as a native sidecar. Nothing installs it yet (install/).
+# the values that add it to Polaris as a native sidecar. install/release.py installs it in
+# step 1, before Polaris (ADR-082).
 apiVersion: v2
 name: polaris-log-sidecar
 description: The Fluent Bit sidecar of Polaris, its configuration and policy v5 as built-in filters

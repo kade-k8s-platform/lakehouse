@@ -165,7 +165,8 @@ def restart_deployment(source, pins, fragment, name="polaris-syslog-probe-c"):
                                {"name": CODE_NAME, "mountPath": "/probe", "readOnly": True}]}
     pod["initContainers"] = [c for c in pod["initContainers"] if c["name"] == "main"] \
         + [side, helper] + [c for c in pod["initContainers"] if c["name"] != "main"]
-    pod["volumes"].append(volume)
+    # The release's own pod now carries a volume of this name: replace it.
+    pod["volumes"] = [v for v in pod["volumes"] if v["name"] != volume["name"]] + [volume]
     pod["shareProcessNamespace"] = True
     pod["securityContext"] = {**pod.get("securityContext", {}), "fsGroup": UID}
     polaris = next(c for c in pod["containers"] if c["name"] == syslog_probe.POLARIS_CONTAINER)

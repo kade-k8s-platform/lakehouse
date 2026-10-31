@@ -1,7 +1,8 @@
-# Added to Polaris as a third `-f` file, after values-lakehouse.yaml (ADR-081, ADR-009): the Fluent
+# Added to Polaris as an extra `-f` file, after values-lakehouse.yaml and before the file
+# install/release.py generates (ADR-081, ADR-009): the Fluent
 # Bit sidecar as a native sidecar through upstream's `extraInitContainers` (restartPolicy Always),
-# and Quarkus's syslog handler pointed at it. Installing it is install/release.py's (L4); until
-# then nothing passes this file to helm.
+# and Quarkus's syslog handler pointed at it. install/release.py installs the chart's ConfigMap
+# first, then passes this file to helm for Polaris (ADR-082).
 #
 # Upstream runs `tpl` over extraInitContainers, so no template syntax may appear here, and so the
 # values of this chart are repeated as literals: charts/test_polaris_log_sidecar.py keeps both

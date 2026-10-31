@@ -3,6 +3,7 @@
 import http.server
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1019,36 +1020,44 @@ class Steps(unittest.TestCase):
                 return boot(argv, stdin)
             if release.BATCH_CHART in argv or "cronjob/polaris-log-batch" in argv:
                 return batch(argv, stdin)
+            if release.SIDECAR_CHART in argv:
+                order.append(release.SIDECAR_CHART)
+                return sidecar(argv, stdin)
             if "catalog-datahub" in argv:
                 return dh(argv)
             if "polaris-s3" in argv or "rollout" in argv or release.POLARIS_CHART in argv:
+                if release.POLARIS_CHART in argv:
+                    order.append(release.POLARIS_CHART)
                 return pol(argv, stdin)
             return pg(argv)
-        batch, dh = FakeBatch(), datahub_calls()
+        batch, dh, sidecar, order = FakeBatch(), datahub_calls(), FakeSidecar(), []
         problems, notes = release.install({**BOOTSTRAP_ENV, **LOGS_ENV}, run, ["1.30"],
                                           dry_run=False)
         self.assertEqual(problems, [])
         self.assertEqual([n.split(":")[0] for n in notes],
-                         ["Step 0"] * 2 + ["Step 1"] * 12 + ["Step 2"] * 2)
+                         ["Step 0"] * 2 + ["Step 1"] * 13 + ["Step 2"] * 2)
         self.assertIn("Barman Cloud Plugin", notes[1])
         self.assertIn("network policies", notes[2])
         self.assertIn("polaris-pg", notes[3])
         self.assertIn("answer", notes[4])
         self.assertIn("bootstrapped", notes[5])
         self.assertIn("polaris-logs", notes[6])
-        self.assertIn("deployment/polaris", notes[7])
+        # ADR-082: the sidecar's ConfigMap before Polaris, whose pods mount it.
+        self.assertIn("log sidecar", notes[7])
+        self.assertIn("deployment/polaris", notes[8])
         # ADR-045 step 1, ADR-066 §4, ADR-068 §4, ADR-070 §4: then Datahub, its policies,
         # datahub-pg, its Kafka, then its OpenSearch.
-        self.assertIn("Datahub's network policies", notes[8])
-        self.assertIn("datahub-pg", notes[9])
-        self.assertIn("datahub-kafka", notes[10])
-        self.assertIn("datahub-opensearch", notes[11])
+        self.assertIn("Datahub's network policies", notes[9])
+        self.assertIn("datahub-pg", notes[10])
+        self.assertIn("datahub-kafka", notes[11])
+        self.assertIn("datahub-opensearch", notes[12])
         # ADR-071 §7: then Datahub itself.
-        self.assertIn("Datahub in catalog-datahub is installed", notes[12])
+        self.assertIn("Datahub in catalog-datahub is installed", notes[13])
         # ADR-076 §3: then its Polaris principal, last in step 1.
-        self.assertIn("principal datahub_ingest", notes[13])
-        self.assertIn("cronjob/polaris-log-batch", notes[14])
-        self.assertIn("console is not enabled", notes[15])
+        self.assertIn("principal datahub_ingest", notes[14])
+        self.assertIn("cronjob/polaris-log-batch", notes[15])
+        self.assertIn("console is not enabled", notes[16])
+        self.assertEqual(order[:2], [release.SIDECAR_CHART, release.POLARIS_CHART])
         # ADR-045 §2: the policies first in step 1, before polaris-pg.
         helms = [c for c in pg.calls if c[0] == "helm"]
         self.assertEqual([h[h.index("--install") + 1] for h in helms],
@@ -1094,6 +1103,8 @@ class Steps(unittest.TestCase):
                 return console(argv, stdin)
             if "catalog-datahub" in argv:
                 return dh(argv)
+            if release.SIDECAR_CHART in argv:
+                return (0, "")
             if "polaris-s3" in argv or "rollout" in argv or release.POLARIS_CHART in argv:
                 return pol(argv, stdin)
             return pg(argv)
@@ -1125,6 +1136,8 @@ class Steps(unittest.TestCase):
                 return batch(argv, stdin)
             if "catalog-datahub" in argv:
                 return dh(argv)
+            if release.SIDECAR_CHART in argv:
+                return (0, "")
             if "polaris-s3" in argv or "rollout" in argv or release.POLARIS_CHART in argv:
                 return pol(argv, stdin)
             return pg(argv)
@@ -1157,6 +1170,8 @@ class Steps(unittest.TestCase):
                 return batch(argv, stdin)
             if "catalog-datahub" in argv:
                 return dh(argv)
+            if release.SIDECAR_CHART in argv:
+                return (0, "")
             if "polaris-s3" in argv or "rollout" in argv or release.POLARIS_CHART in argv:
                 return pol(argv, stdin)
             return pg(argv)
@@ -1183,6 +1198,8 @@ class Steps(unittest.TestCase):
                 return FakePrincipal()(argv, stdin)
             if "polaris-root" in argv or "run" in argv:
                 return boot(argv, stdin)
+            if release.SIDECAR_CHART in argv:
+                return (0, "")
             if "polaris-s3" in argv or "rollout" in argv or release.POLARIS_CHART in argv:
                 return pol(argv, stdin)
             return pg(argv)
@@ -1213,6 +1230,8 @@ class Steps(unittest.TestCase):
                 return console(argv, stdin)
             if "catalog-datahub" in argv:
                 return dh(argv)
+            if release.SIDECAR_CHART in argv:
+                return (0, "")
             if "polaris-s3" in argv or "rollout" in argv or release.POLARIS_CHART in argv:
                 return pol(argv, stdin)
             return pg(argv)
@@ -1239,6 +1258,8 @@ class Steps(unittest.TestCase):
                 return FakePrincipal()(argv, stdin)
             if "polaris-root" in argv or "run" in argv:
                 return boot(argv, stdin)
+            if release.SIDECAR_CHART in argv:
+                return (0, "")
             if "polaris-s3" in argv or "rollout" in argv or release.POLARIS_CHART in argv:
                 return pol(argv, stdin)
             return pg(argv)
@@ -1826,11 +1847,160 @@ class JdbcProperties(unittest.TestCase):
             self.assertEqual(release.polaris_jdbc_properties(f.name), {"socketTimeout": "7"})
 
 
+class FakeSidecar:
+    """Answers the sidecar step's helm call; records every call and the generated values."""
+
+    def __init__(self, helm=(0, "")):
+        self.helm, self.calls, self.values = helm, [], []
+
+    def __call__(self, argv, stdin=None):
+        self.calls.append(argv)
+        if argv[0] == "helm":
+            files = [argv[i + 1] for i, a in enumerate(argv) if a == "-f"]
+            with open(files[-1], encoding="utf-8") as f:
+                self.values.append(json.load(f))
+            return self.helm
+        raise AssertionError(f"unexpected call {argv}")
+
+
+class LogSidecar(unittest.TestCase):
+    """ADR-082, ADR-081: step 1 installs the sidecar's ConfigMap before Polaris."""
+
+    ENV = {**BOOTSTRAP_ENV, "POLARIS_LOG_OUTPUT_HOST": "fluent.example.invalid",
+           "POLARIS_LOG_OUTPUT_PORT": "24225"}
+
+    def step(self, calls, env=None, dry_run=False):
+        return release.log_sidecar(env or self.ENV, calls, dry_run=dry_run)
+
+    def test_installs_the_chart_in_polaris_namespace_with_the_env_values(self):
+        calls = FakeSidecar()
+        problems, notes = self.step(calls)
+        self.assertEqual(problems, [])
+        self.assertEqual(len(calls.calls), 1)
+        helm = calls.calls[0]
+        self.assertEqual(helm[:3], ["helm", "--kube-context", "kind-lakehouse-gate"])
+        self.assertEqual(helm[helm.index("-n") + 1], "catalog-polaris")
+        self.assertEqual(helm[helm.index("upgrade"):helm.index("upgrade") + 4],
+                         ["upgrade", "--install", "polaris-log-sidecar", release.SIDECAR_CHART])
+        self.assertEqual(calls.values,
+                         [{"output": {"host": "fluent.example.invalid", "port": 24225}}])
+        self.assertIsInstance(calls.values[0]["output"]["port"], int)
+        files = [helm[i + 1] for i, a in enumerate(helm) if a == "-f"]
+        self.assertFalse(os.path.exists(files[0]), "the generated values file is left behind")
+        self.assertNotIn("--wait", helm)
+        self.assertIn("fluent.example.invalid:24225", "\n".join(notes))
+
+    def test_empty_variables_pass_no_values_and_the_note_says_so(self):
+        calls = FakeSidecar()
+        problems, notes = self.step(calls, BOOTSTRAP_ENV)
+        self.assertEqual(problems, [])
+        self.assertEqual(calls.values, [{}])
+        text = "\n".join(notes)
+        self.assertIn("POLARIS_LOG_OUTPUT_HOST is empty", text)
+        self.assertIn("main-fluent-bit-standin", text)
+
+    def test_a_port_without_a_host_is_named_with_the_placeholder(self):
+        calls = FakeSidecar()
+        _, notes = self.step(calls, {**BOOTSTRAP_ENV, "POLARIS_LOG_OUTPUT_PORT": "24225"})
+        self.assertEqual(calls.values, [{"output": {"port": 24225}}])
+        self.assertIn("port 24225", "\n".join(notes))
+
+    def test_a_port_that_is_not_a_port_stops_before_helm(self):
+        for port in ("abc", "0", "70000", "\u0665\u0661\u0664\u0660"):
+            with self.subTest(port=port):
+                calls = FakeSidecar()
+                problems, _ = self.step(calls, {**self.ENV, "POLARIS_LOG_OUTPUT_PORT": port})
+                self.assertIn("POLARIS_LOG_OUTPUT_PORT", "\n".join(problems))
+                self.assertEqual(calls.calls, [])
+
+    def test_dry_run_is_server_side(self):
+        calls = FakeSidecar()
+        problems, notes = self.step(calls, dry_run=True)
+        self.assertEqual(problems, [])
+        self.assertIn("--dry-run=server", calls.calls[0])
+        self.assertIn("dry-run", "\n".join(notes))
+
+    def test_a_failed_helm_stops_with_its_error(self):
+        problems, _ = self.step(FakeSidecar(helm=(1, "invalid ConfigMap")))
+        self.assertIn("invalid ConfigMap", "\n".join(problems))
+
+
+class SidecarSteps(unittest.TestCase):
+    def test_a_failed_sidecar_chart_stops_before_polaris_and_everything_after(self):
+        step0, pg, endpoints = FakeKubectl(), FakeCalls(), FakeRun()
+        boot, claim, calls = FakeBootstrap(), FakeClaim(), []
+
+        def run(argv, stdin=None):
+            calls.append(argv)
+            if "crd" in argv or "cnpg-system" in argv:
+                return step0(argv)
+            if "endpoint-check" in " ".join(argv):
+                return endpoints(argv, stdin)
+            if "storageclass" in argv or "apply" in argv:
+                return claim(argv, stdin)
+            if "polaris-root" in argv or "run" in argv:
+                return boot(argv, stdin)
+            if release.SIDECAR_CHART in argv:
+                return 1, "ConfigMap refused"
+            return pg(argv)
+        problems, _ = release.install({**BOOTSTRAP_ENV, **LOGS_ENV}, run, ["1.30"],
+                                      dry_run=False)
+        self.assertIn("ConfigMap refused", "\n".join(problems))
+        self.assertFalse(any(release.POLARIS_CHART in c or release.BATCH_CHART in c
+                             for c in calls))
+
+
+class SidecarChecksum(unittest.TestCase):
+    def annotation(self, env=BOOTSTRAP_ENV, **kwargs):
+        return release.polaris_values(env)["podAnnotations"]["checksum/log-sidecar"] \
+            if not kwargs else release.sidecar_checksum(env, **kwargs)
+
+    def test_the_pod_annotation_is_a_sha256_of_the_sidecar_chart_and_its_values(self):
+        first = self.annotation()
+        self.assertRegex(first, r"^[0-9a-f]{64}$")
+        self.assertEqual(first, self.annotation())
+        self.assertNotEqual(first, self.annotation({**BOOTSTRAP_ENV,
+                                                    "POLARIS_LOG_OUTPUT_HOST": "other.invalid"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = os.path.join(tmp, "chart")
+            shutil.copytree(release.SIDECAR_CHART, copy)
+            base = self.annotation(directory=copy)
+            self.assertEqual(base, first)
+            with open(os.path.join(copy, "polaris-values.yaml"), "a") as f:
+                f.write("# comment\n")
+            self.assertEqual(self.annotation(directory=copy), base)
+            template = os.path.join(copy, "templates", "configmap.yaml")
+            with open(template, "a") as f:
+                f.write("# changed\n")
+            self.assertNotEqual(self.annotation(directory=copy), base)
+
+    def test_the_minimal_environment_of_the_chart_tests_works(self):
+        release.polaris_values({"POLARIS_DB_HOST": "", "POLARIS_OPA_URL": "http://opa:8181/x"})
+
+    def test_the_jdbc_and_policy_keys_are_unchanged(self):
+        keys = release.polaris_values(BOOTSTRAP_ENV)["advancedConfig"]
+        self.assertEqual(sorted(keys), ["polaris.authorization.opa.policy-uri",
+                                        "quarkus.datasource.jdbc.url"])
+
+
+class EnvTemplate(unittest.TestCase):
+    def test_the_output_variables_are_in_the_template_and_empty(self):
+        path = os.path.join(release.ROOT, ".env.template")
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        values = release.parse(text)
+        for name in ("POLARIS_LOG_OUTPUT_HOST", "POLARIS_LOG_OUTPUT_PORT"):
+            self.assertEqual(values.get(name), "")
+        for line in text.splitlines():
+            if line.startswith("POLARIS_LOG_OUTPUT_"):
+                self.assertNotIn("://", line)
+
+
 class Polaris(unittest.TestCase):
     def step(self, calls, env=BOOTSTRAP_ENV, dry_run=False):
         return release.polaris(env, calls, dry_run=dry_run)
 
-    def test_installs_the_chart_with_both_values_files_then_waits_for_the_rollout(self):
+    def test_installs_the_chart_with_the_three_values_files_then_waits_for_the_rollout(self):
         calls = FakePolaris()
         problems, notes = self.step(calls)
         self.assertEqual(problems, [])
@@ -1842,8 +2012,10 @@ class Polaris(unittest.TestCase):
                          ["upgrade", "--install", "polaris", release.POLARIS_CHART])
         files = [helm[i + 1] for i, a in enumerate(helm) if a == "-f"]
         self.assertEqual(files[0], release.POLARIS_VALUES)
+        self.assertEqual(files[1], release.SIDECAR_FRAGMENT)
+        self.assertEqual(len(files), 3)
         self.assertEqual(calls.values, [release.polaris_values(BOOTSTRAP_ENV)])
-        self.assertFalse(os.path.exists(files[1]), "the generated values file is left behind")
+        self.assertFalse(os.path.exists(files[2]), "the generated values file is left behind")
         rollout = calls.calls[2]
         self.assertEqual(rollout[rollout.index("rollout"):rollout.index("rollout") + 3],
                          ["rollout", "status", "deployment/polaris"])
@@ -2004,7 +2176,7 @@ class Console(unittest.TestCase):
                 self.assertEqual((problems, calls.calls), ([], []))
                 self.assertIn("Step 2: the console is not enabled", "\n".join(notes))
 
-    def test_installs_the_chart_with_both_values_files_then_waits_for_the_rollout(self):
+    def test_installs_the_chart_with_the_three_values_files_then_waits_for_the_rollout(self):
         calls = FakeConsole()
         problems, notes = self.step(calls)
         self.assertEqual(problems, [])
