@@ -2,51 +2,149 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
   "additionalProperties": false,
-  "required": ["image", "configMapName", "syslog", "input", "output", "resources"],
+  "required": [
+    "image",
+    "configMapName",
+    "syslog",
+    "routing",
+    "input",
+    "output",
+    "resources"
+  ],
   "properties": {
-    "image": {"type": "string", "pattern": "^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$"},
-    "configMapName": {"type": "string", "minLength": 1},
+    "image": {
+      "type": "string",
+      "pattern": "^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$"
+    },
+    "configMapName": {
+      "type": "string",
+      "minLength": 1
+    },
     "syslog": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["listen", "port", "maxLength", "queueLength"],
+      "required": [
+        "listen",
+        "port",
+        "appName",
+        "maxLength",
+        "queueLength"
+      ],
       "properties": {
-        "listen": {"type": "string", "minLength": 1},
-        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "maxLength": {"type": "integer", "minimum": 1},
-        "queueLength": {"type": "integer", "minimum": 1}
+        "listen": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "queueLength": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "appName": {
+          "type": "string",
+          "pattern": "^[!-~]{1,48}$"
+        }
       }
     },
     "input": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bufferChunkSize", "bufferMaxSize", "memBufLimit"],
+      "required": [
+        "bufferChunkSize",
+        "bufferMaxSize",
+        "memBufLimit"
+      ],
       "properties": {
-        "bufferChunkSize": {"type": "string", "pattern": "^[0-9]+(KB|MB)$"},
-        "bufferMaxSize": {"type": "string", "pattern": "^[0-9]+(KB|MB)$"},
-        "memBufLimit": {"type": "string", "pattern": "^[0-9]+(KB|MB)$"}
+        "bufferChunkSize": {
+          "type": "string",
+          "pattern": "^[0-9]+(KB|MB)$"
+        },
+        "bufferMaxSize": {
+          "type": "string",
+          "pattern": "^[0-9]+(KB|MB)$"
+        },
+        "memBufLimit": {
+          "type": "string",
+          "pattern": "^[0-9]+(KB|MB)$"
+        }
       }
     },
     "output": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["host", "port", "tls", "tlsVerify", "retryLimit", "requireAck"],
+      "required": [
+        "host",
+        "port",
+        "tls",
+        "tlsVerify",
+        "retryLimit",
+        "requireAck"
+      ],
       "properties": {
-        "host": {"type": "string", "minLength": 1},
-        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "tls": {"type": "boolean"},
-        "tlsVerify": {"type": "boolean"},
-        "retryLimit": {"type": "integer", "minimum": 1},
-        "requireAck": {"type": "boolean"}
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "tls": {
+          "type": "boolean"
+        },
+        "tlsVerify": {
+          "type": "boolean"
+        },
+        "retryLimit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requireAck": {
+          "type": "boolean"
+        }
       }
     },
     "resources": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["requests", "limits"],
+      "required": [
+        "requests",
+        "limits"
+      ],
       "properties": {
-        "requests": {"type": "object"},
-        "limits": {"type": "object"}
+        "requests": {
+          "type": "object"
+        },
+        "limits": {
+          "type": "object"
+        }
+      }
+    },
+    "routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tagPrefix",
+        "emitterMemBufLimit"
+      ],
+      "properties": {
+        "tagPrefix": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+$"
+        },
+        "emitterMemBufLimit": {
+          "type": "string",
+          "pattern": "^[0-9]+(KB|MB)$"
+        }
       }
     }
   }

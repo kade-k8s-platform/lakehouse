@@ -8,9 +8,19 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
 data:
   # Fluent Bit's YAML configuration. Key names are checked against schema.json of the pinned
-  # image; that this file starts it is the gate's to prove (L3). Scalars are written as JSON,
-  # which YAML reads as the same type.
+  # image; that this file starts it is the smoke step's to prove (gates/sidecar_smoke.py).
+  # Scalars are written as JSON, which YAML reads as the same type. The filters are ADR-082's
+  # twelve rows in its order, built-in `parser`, `grep` and `rewrite_tag` only: every Match is an
+  # exact tag, every rewrite_tag has one rule and KEEP false, a record a rewrite_tag takes leaves
+  # its stage. Stage tags have two segments and final tags three, so the output's `*.*` match
+  # keeps a record no row took off the wire.
   fluent-bit.yaml: |
+    {{- $tag := .Values.routing.tagPrefix }}
+    {{- $access := printf "%s.access" $tag }}
+    {{- $post := printf "%s.post" $tag }}
+    {{- $err := printf "%s.error" $tag }}
+    {{- $cand := printf "%s.candidate" $tag }}
+    {{- $limit := .Values.routing.emitterMemBufLimit }}
     service:
       flush: 1
       log_level: info
@@ -18,6 +28,7 @@ data:
     pipeline:
       inputs:
         - name: syslog
+          tag: {{ $tag | toJson }}
           mode: tcp
           listen: {{ .Values.syslog.listen | toJson }}
           port: {{ .Values.syslog.port | toJson }}
@@ -28,19 +39,79 @@ data:
           mem_buf_limit: {{ .Values.input.memBufLimit | toJson }}
       filters:
         - name: parser
-          match: '*'
+          match: {{ $tag }}
           key_name: message
           parser: polaris-json
           reserve_data: false
           preserve_key: false
-        - name: lua
-          match: '*'
-          script: {{ include "polaris-log-sidecar.mountPath" . }}/policy_v5.lua
-          call: polaris_filter
-          type_int_key: sequence threadId http_status response_size
+        - name: rewrite_tag
+          match: {{ $tag }}
+          rule: {{ printf "$level ^(ERROR|WARN)$ %s false" (printf "%s.r1" $err) | toJson }}
+          emitter_name: e_r1
+          emitter_mem_buf_limit: {{ $limit | toJson }}
+        - name: rewrite_tag
+          match: {{ $tag }}
+          rule: {{ printf "$loggerName ^io\\.quarkus\\.http\\.access-log$ %s false" $access | toJson }}
+          emitter_name: e_access
+          emitter_mem_buf_limit: {{ $limit | toJson }}
+        - name: rewrite_tag
+          match: {{ $tag }}
+          rule: {{ printf "$loggerName (^|\\.)(IcebergExceptionMapper|PolarisServiceImpl)$ %s false" (printf "%s.r2b" $cand) | toJson }}
+          emitter_name: e_r2b
+          emitter_mem_buf_limit: {{ $limit | toJson }}
+        - name: grep
+          match: {{ $tag }}
+          exclude: loggerName .+
+        - name: rewrite_tag
+          match: {{ $tag }}
+          rule: {{ printf "$message .+ %s false" (printf "%s.r7" $err) | toJson }}
+          emitter_name: e_r7
+          emitter_mem_buf_limit: {{ $limit | toJson }}
+        - name: parser
+          match: {{ $access }}
+          key_name: message
+          parser: polaris-access
+          reserve_data: true
+          preserve_key: true
+        - name: rewrite_tag
+          match: {{ $access }}
+          rule: {{ printf "$http_status ^404$ %s false" (printf "%s.r3p" $cand) | toJson }}
+          emitter_name: e_r3p
+          emitter_mem_buf_limit: {{ $limit | toJson }}
+        - name: rewrite_tag
+          match: {{ $access }}
+          rule: {{ printf "$http_status ^[45][0-9][0-9]$ %s false" (printf "%s.r3" $err) | toJson }}
+          emitter_name: e_r3
+          emitter_mem_buf_limit: {{ $limit | toJson }}
+        - name: rewrite_tag
+          match: {{ $access }}
+          rule: {{ printf "$http_method ^(PUT|DELETE|PATCH)$ %s false" (printf "%s.r4" $cand) | toJson }}
+          emitter_name: e_r4
+          emitter_mem_buf_limit: {{ $limit | toJson }}
+        - name: grep
+          match: {{ $access }}
+          exclude: http_method ^(GET|HEAD)$
+        - name: rewrite_tag
+          match: {{ $access }}
+          rule: {{ printf "$http_method ^POST$ %s false" $post | toJson }}
+          emitter_name: e_post
+          emitter_mem_buf_limit: {{ $limit | toJson }}
+        - name: rewrite_tag
+          match: {{ $post }}
+          rule: {{ printf "$api_path ^/api/management/ %s false" (printf "%s.r5" $cand) | toJson }}
+          emitter_name: e_r5
+          emitter_mem_buf_limit: {{ $limit | toJson }}
+        - name: grep
+          match: {{ $post }}
+          exclude: api_path .+
+        - name: rewrite_tag
+          match: {{ $access }}
+          rule: {{ printf "$message .+ %s false" (printf "%s.r7a" $err) | toJson }}
+          emitter_name: e_r7a
+          emitter_mem_buf_limit: {{ $limit | toJson }}
       outputs:
         - name: forward
-          match: '*'
+          match: {{ printf "%s.*.*" $tag | quote }}
           host: {{ .Values.output.host | toJson }}
           port: {{ .Values.output.port | toJson }}
           tls: {{ .Values.output.tls | toJson }}
@@ -48,16 +119,20 @@ data:
           require_ack_response: {{ .Values.output.requireAck | toJson }}
           retry_limit: {{ .Values.output.retryLimit | toJson }}
   # polaris-syslog is the image's syslog-rfc5424 (parsers.conf of 5.1.4), copied so that the
-  # sidecar does not mount over /fluent-bit/etc. The body, a JSON line from Quarkus, is `message`.
+  # sidecar does not mount over /fluent-bit/etc, with an optional UTF-8 BOM before `message`
+  # (Quarkus puts one there, RFC 5424). The body, a JSON line from Quarkus, is `message`.
+  # polaris-access splits the access line `%h %l %u %t "%r" %s %b` into strings: no Types, so
+  # `http_status` stays a string for the regexes of the rows.
   parsers.yaml: |
     parsers:
       - name: polaris-syslog
         format: regex
-        regex: '^\<(?<pri>[0-9]{1,5})\>1 (?<time>[^ ]+) (?<host>[^ ]+) (?<ident>[^ ]+) (?<pid>[-0-9]+) (?<msgid>[^ ]+) (?<extradata>(\[(.*?)\]|-)) (?<message>.+)$'
+        regex: '^\<(?<pri>[0-9]{1,5})\>1 (?<time>[^ ]+) (?<host>[^ ]+) (?<ident>[^ ]+) (?<pid>[-0-9]+) (?<msgid>[^ ]+) (?<extradata>(\[(.*?)\]|-)) (?:\xEF\xBB\xBF)?(?<message>.+)$'
         time_key: time
         time_format: '%Y-%m-%dT%H:%M:%S.%L%z'
         time_keep: true
       - name: polaris-json
         format: json
-  policy_v5.lua: |
-{{ .Files.Get "files/policy_v5.lua" | indent 4 }}
+      - name: polaris-access
+        format: regex
+        regex: '^(?<client_ip>\S+) \S+ (?<user_principal_name>\S+) \[[^\]]*\] "(?<http_method>[A-Z]+) (?<api_path>\S+)[^"]*" (?<http_status>\d+) (?<response_size>\S+)'

@@ -184,6 +184,9 @@
                   Then gates/syslog_probe.py runs Polaris 1.6.0's syslog proofs (ADR-081): a
                   clone of the release's Deployment with the syslog handler on, against a plain
                   receiver and against Fluent Bit's syslog input; see that module.
+                  Then gates/sidecar_smoke.py (ADR-082): syslog frames through the rendered
+                  sidecar configuration into a Fluent Bit stand-in, read per tag, and Polaris's
+                  handler reconnecting after a sidecar restart; see that module.
   check-console   runs gates/console/check.py (on stdin) in a short-lived pod on the pinned
                   Python image: the console answers and points the browser at Polaris, and
                   gate_maintainer signs in as the browser does, from the console's origin,
@@ -262,6 +265,7 @@ import release  # noqa: E402
 import release_tag  # noqa: E402
 import seed  # noqa: E402
 import standins  # noqa: E402
+import sidecar_smoke  # noqa: E402
 import syslog_probe  # noqa: E402
 import traffic  # noqa: E402
 
@@ -3093,6 +3097,8 @@ def main(argv):
         env = release.load_env(ROOT, os.environ)
         problems, notes = check_logs(env, pins)
         more_problems, more_notes = syslog_probe.run(env, pins, CONTEXT, run, output)
+        problems, notes = problems + more_problems, notes + more_notes
+        more_problems, more_notes = sidecar_smoke.run(env, pins, CONTEXT, run, output)
         problems, notes = problems + more_problems, notes + more_notes
         for line in notes + problems:
             print(line, flush=True)
