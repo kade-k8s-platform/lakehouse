@@ -342,7 +342,8 @@ Started on 2026-10-18 (Kade).
 
 - Metrics endpoints and the scrape configuration the other team's Prometheus needs:
   Polaris's done in P2 (ADR-046); Datahub's join the contract with its chart.
-- Log files and their format as P0 documents them. No dashboards of our own.
+- The log sidecar's records and routing as contract v3 documents them (ADR-081, ADR-082). No
+  dashboards of our own.
 
 ### P6: measurements
 
