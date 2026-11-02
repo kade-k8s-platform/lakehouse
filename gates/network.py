@@ -23,6 +23,7 @@
 """
 
 import collections
+import json
 import os
 import sys
 
@@ -53,6 +54,9 @@ POD_LABELS = {"polaris-join": JOIN,
               "datahub-kafka-client": {release.DATAHUB_KAFKA_CLIENT_LABEL: "true"},
               "datahub-opensearch-client": {release.DATAHUB_OPENSEARCH_CLIENT_LABEL: "true"},
               "datahub-gms-client": {release.DATAHUB_GMS_CLIENT_LABEL: "true"}}
+# Probe sources that wear Polaris's pod labels, which Polaris's Services select by: never Ready,
+# or a Service would send connections to a pod that listens on nothing.
+UNREADY = ("polaris-pod",)
 # The gate's Service for CNPG's exporter on polaris-pg's instances (ADR-046 §4).
 METRICS_SERVICE = "gate-polaris-pg-metrics"
 PG_METRICS_PORT = 9187
@@ -265,11 +269,16 @@ def gate_policies(env):
     ]}
 
 
-def probe_command(namespace, image, name, addresses, timeout=TIMEOUT, labels=None):
+def probe_command(namespace, image, name, addresses, timeout=TIMEOUT, labels=None, ready=True):
     """A short-lived pod in `namespace`, without the check label but with `labels` if given,
-    running PROBE (on stdin)."""
+    running PROBE (on stdin). With `ready` False its readiness probe always fails, so no Service
+    that selects `labels` ever lists it as an endpoint."""
     import gate  # gate.py imports this module; its context is read when called.
     flags = [f"--labels={','.join(f'{k}={v}' for k, v in labels.items())}"] if labels else []
+    if not ready:
+        overrides = {"spec": {"containers": [{
+            "name": name, "image": image, "readinessProbe": {"exec": {"command": ["false"]}}}]}}
+        flags += ["--override-type=strategic", "--overrides", json.dumps(overrides)]
     return ["kubectl", "--context", gate.CONTEXT, "-n", namespace, "run", name, *flags,
             f"--image={image}", "--restart=Never", "--rm", "-i", "--quiet",
             "--pod-running-timeout=3m", "--command", "--", "python3", "-", str(timeout),

@@ -2329,7 +2329,8 @@ def check_network(env, pins):
         command = network.probe_command(namespace, smoke_python_image(pins),
                                         f"check-network-{source}-{os.getpid()}",
                                         [addresses[t] for t in wanted],
-                                        labels=network.POD_LABELS.get(source))
+                                        labels=network.POD_LABELS.get(source),
+                                        ready=source not in network.UNREADY)
         out = subprocess.run(command, input=network.PROBE, capture_output=True, text=True,
                              check=False)
         by_address = network.parse_probe(out.stdout)
