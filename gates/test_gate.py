@@ -3,6 +3,7 @@
 import contextlib
 import copy
 import hashlib
+import inspect
 import io
 import json
 import re
@@ -225,39 +226,32 @@ class Commands(unittest.TestCase):
                                  f"{gate.CLUSTER}-control-plane",
                                  "node-role.kubernetes.io/control-plane:NoSchedule-"])
 
-    def test_up_gives_kinds_provisioner_a_shared_class_and_keeps_standard(self):
-        # ADR-036: ReadWriteMany on kind, from local-path-provisioner's sharedFileSystemPath.
-        (patch, _), = [c for c in self.commands() if "patch" in c[0]]
-        self.assertEqual(patch[patch.index("-n") + 1], "local-path-storage")
-        self.assertEqual(patch[patch.index("patch"):patch.index("patch") + 3],
-                         ["patch", "configmap", "local-path-config"])
-        data = json.loads(patch[patch.index("-p") + 1])["data"]
-        self.assertEqual(list(data), ["config.json"])
-        config = json.loads(data["config.json"])
-        self.assertEqual(config["nodePathMap"], [])
-        self.assertEqual(config["storageClassConfigs"], {
-            "standard": {"nodePathMap": [{"node": "DEFAULT_PATH_FOR_NON_LISTED_NODES",
-                                          "paths": ["/var/local-path-provisioner"]}]},
-            gate.SHARED_CLASS: {"sharedFileSystemPath": gate.SHARED_NODE_DIR}})
-
-    def test_the_shared_class_is_applied_and_the_provisioner_restarted_before_cnpg(self):
+    def test_up_leaves_kinds_provisioner_and_storage_classes_alone(self):
         steps = self.commands()
-        helm = self.helm_index(steps)
-        (apply, stdin), = [c for c in steps[:helm] if "apply" in c[0]]
-        storage_class = json.loads(stdin)
-        self.assertEqual((storage_class["kind"], storage_class["metadata"]["name"]),
-                         ("StorageClass", gate.SHARED_CLASS))
-        self.assertEqual(storage_class["provisioner"], "rancher.io/local-path")
-        self.assertEqual(storage_class["reclaimPolicy"], "Delete")
-        names = [" ".join(argv) for argv, _ in steps]
-        restart = next(i for i, n in enumerate(names) if "rollout restart" in n)
-        status = next(i for i, n in enumerate(names) if "rollout status" in n)
-        self.assertIn("deployment/local-path-provisioner", names[restart])
-        self.assertLess(restart, status)
-        self.assertLess(status, helm)
+        text = " ".join(" ".join(argv) + " " + (stdin or "") for argv, stdin in steps)
+        for word in ("local-path", "StorageClass", "configmap", "rollout restart", "shared"):
+            self.assertNotIn(word, text)
+        self.assertEqual([argv[0] for argv, _ in steps],
+                         ["kind", "kubectl", "helm", "kubectl", "kubectl", "kubectl", "kubectl"])
         for argv, _ in steps[1:]:
             if argv[0] == "kubectl":
                 self.assertEqual(argv[1:3], ["--context", gate.CONTEXT])
+
+    def test_up_makes_no_runner_directory(self):
+        pins = {"cnpg_chart": {"url": "https://example.invalid/chart.tgz", "sha256": "x"},
+                "manifests": {"cert_manager": {"url": "u1", "sha256": "x"},
+                              "barman_cloud_plugin": {"url": "u2", "sha256": "x"}}}
+        made = []
+        with mock.patch.object(gate, "fetch", return_value=b"namespace: cnpg-system\n"), \
+                mock.patch.object(gate, "run"), \
+                mock.patch.object(gate.os, "makedirs", side_effect=lambda *a, **k: made.append(a)), \
+                mock.patch.object(gate.os, "chmod", side_effect=lambda *a, **k: made.append(a)), \
+                mock.patch.object(gate, "up_commands", return_value=[]):
+            gate.up(pins)
+        self.assertFalse([m for m in made if "lakehouse-gate-shared" in str(m)], made)
+        source = inspect.getsource(gate.up)
+        self.assertNotIn("makedirs", source)
+        self.assertNotIn("chmod", source)
 
     def test_the_plugin_manifest_must_name_only_the_operators_namespace(self):
         # The release manifest names its namespace itself; applied elsewhere, the plugin would
@@ -274,11 +268,12 @@ class Commands(unittest.TestCase):
             roles = [line.split(":", 1)[1].strip() for line in f if "role:" in line]
         self.assertEqual(roles, ["control-plane", "worker", "worker"])
 
-    def test_every_node_mounts_the_same_host_directory_for_the_shared_class(self):
+    def test_no_node_mounts_a_host_directory(self):
         with open(os.path.join(HERE, "kind.yaml"), encoding="utf-8") as f:
             text = f.read()
-        self.assertEqual(text.count(f"hostPath: {gate.SHARED_HOST_DIR}"), 3)
-        self.assertEqual(text.count(f"containerPath: {gate.SHARED_NODE_DIR}"), 3)
+        for word in ("extraMounts", "hostPath", "containerPath", "lakehouse-gate-shared",
+                     "local-path-shared"):
+            self.assertNotIn(word, text)
 
 
 class Install(unittest.TestCase):
@@ -660,9 +655,9 @@ class InstallTimeline(unittest.TestCase):
             "job catalog-polaris/polaris-pg-1-initdb: Completed (Job completed)",
         ])
 
-    def test_the_endpoint_bootstrap_and_claim_events_split_the_step_before_polaris(self):
+    def test_the_endpoint_bootstrap_events_split_the_step_before_polaris(self):
         # release.py runs the endpoint check and the bootstrap in pods it deletes (--rm);
-        # their events stay, as do the log claim's. Other pods and claims are left out.
+        # their events stay; other pods and every claim are left out.
         def event(kind, name, reason, at, message="m"):
             return {"involvedObject": {"kind": kind, "namespace": "catalog-polaris",
                                        "name": name},
@@ -682,8 +677,8 @@ class InstallTimeline(unittest.TestCase):
             "pod catalog-polaris/endpoint-check-1a2b3c4d: Started (m)",
             "pod catalog-polaris/polaris-bootstrap-5e6f7a8b: Pulled "
             "(Container image already present on machine)",
-            "persistentvolumeclaim catalog-polaris/polaris-logs: ProvisioningSucceeded (m)",
         ])
+        self.assertFalse(hasattr(gate, "TIMELINE_CLAIMS"))
 
     def test_events_that_cannot_be_read_leave_the_rest_of_the_timeline(self):
         def subprocess_run(argv, **kwargs):
@@ -805,8 +800,6 @@ DATAHUB_EMITTER_NAMESPACE_LABEL=
 POLARIS_CONSOLE_ENABLED=false
 POLARIS_CONSOLE_ORIGIN=
 POLARIS_CONSOLE_API_URL=
-POLARIS_LOGS_STORAGE_CLASS=
-POLARIS_LOGS_SIZE=
 POLARIS_BACKUP_BUCKET=
 DATAHUB_BACKUP_BUCKET=
 POLARIS_S3_ACCESS_KEY_ID=
@@ -914,33 +907,22 @@ class GateEnv(unittest.TestCase):
         self.assertEqual(env["POLARIS_CONSOLE_API_URL"],
                          "http://polaris.catalog-polaris.svc.cluster.local:8181")
 
-    def test_the_last_releases_claim_variables_are_supplied_without_the_template(self):
-        """The upgrade job runs the last release's release.py over this .env; it stops
-        without these two (L7g removes them with the shared class)."""
-        legacy = ("POLARIS_LOGS_STORAGE_CLASS", "POLARIS_LOGS_SIZE")
-        without = "\n".join(line for line in TEMPLATE.splitlines()
-                            if line.split("=", 1)[0] not in legacy) + "\n"
-        for template in (without, TEMPLATE):
-            with self.subTest(has_them=template is TEMPLATE):
+    def test_the_gate_env_holds_neither_old_log_variable(self):
+        with open(os.path.join(HERE, "..", ".env.template"), encoding="utf-8") as f:
+            committed = f.read()
+        for label, template in (("fixture", TEMPLATE), ("committed", committed)):
+            with self.subTest(template=label):
                 text = gate.gate_env(template, gen=lambda name: "x")
                 env = gate.init_env.parse(text)
-                self.assertEqual(env["POLARIS_LOGS_STORAGE_CLASS"], gate.SHARED_CLASS)
-                self.assertEqual(env["POLARIS_LOGS_SIZE"], "1Gi")
-                for name in legacy:
-                    self.assertEqual(sum(line.startswith(name + "=")
-                                         for line in text.splitlines()), 1, name)
+                self.assertNotIn("POLARIS_LOGS_STORAGE_CLASS", env)
+                self.assertNotIn("POLARIS_LOGS_SIZE", env)
+                self.assertNotIn("POLARIS_LOGS_", text)
 
     def test_the_committed_template_has_neither_old_variable(self):
         with open(os.path.join(HERE, "..", ".env.template"), encoding="utf-8") as f:
             names = gate.init_env.parse(f.read())
         self.assertNotIn("POLARIS_LOGS_STORAGE_CLASS", names)
         self.assertNotIn("POLARIS_LOGS_SIZE", names)
-
-    def test_the_gate_env_of_the_committed_template_still_has_both(self):
-        with open(os.path.join(HERE, "..", ".env.template"), encoding="utf-8") as f:
-            env = gate.init_env.parse(gate.gate_env(f.read()))
-        self.assertTrue(env["POLARIS_LOGS_STORAGE_CLASS"])
-        self.assertTrue(env["POLARIS_LOGS_SIZE"])
 
     def test_everything_else_is_left_to_init_env(self):
         env = gate.init_env.parse(gate.gate_env(TEMPLATE, gen=lambda name: "x"))

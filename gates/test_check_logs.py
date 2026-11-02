@@ -17,9 +17,10 @@ class V2IsGone(unittest.TestCase):
         "batch_job job_outcome json_lines batch_events fluent_bit_records logs_listing_command "
         "parse_listing fluent_bit_pod LOGS_REQUESTS LOGS_CATALOG LOGS_NAMESPACE "
         "LOGS_POLICY_KINDS APP_LINE_LOGGERS LOGS_MOUNT OUTPUT_DIRS READER_UID LOGS_LISTING "
-        "batch_image_commands"
+        "batch_image_commands SHARED_HOST_DIR SHARED_NODE_DIR SHARED_CLASS GATE_LOGS_SIZE "
+        "STANDARD_NODE_PATHS shared_storage_class LEGACY_ENV TIMELINE_CLAIMS"
     ).split()
-    KEPT = "wait_for LOGS_TIMEOUT SHARED_CLASS GATE_LOGS_SIZE gate_env".split()
+    KEPT = "wait_for LOGS_TIMEOUT gate_env".split()
 
     def test_the_v2_checks_and_helpers_are_gone(self):
         for name in self.REMOVED:
@@ -28,6 +29,9 @@ class V2IsGone(unittest.TestCase):
     def test_what_the_install_and_other_parts_still_need_is_kept(self):
         for name in self.KEPT:
             self.assertTrue(hasattr(gate, name), name)
+
+    def test_up_no_longer_offers_a_shared_class(self):
+        self.assertNotIn("shared", gate.__doc__)
 
     def test_the_batch_image_command_is_gone(self):
         self.assertNotIn("batch-image", gate.__doc__)
