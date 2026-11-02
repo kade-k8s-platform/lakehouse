@@ -213,7 +213,21 @@ source does not matter for operation. What follows is the list they cover.
   count them, both pods' files are read, and the second run changes nothing.
   The release flow pushes the batch's image to GHCR under its content-hash tag, and a
   cluster pulls it from `IMAGE_REGISTRY` or GHCR (ADR-080, #55); `platform-2026.10.12`,
-  the first release with Polaris, pushed it (#78).- Backups (2026-10-12, ADR-043, #83). polaris-pg archives its WAL and takes a daily base
+  the first release with Polaris, pushed it (#78). ADR-081 replaces this path with the log
+  sidecar below; the batch, its claim and check-logs stay until the cutover removes them.
+- The log sidecar (2026-10-30 to 2026-10-31, ADR-081, ADR-082). Polaris sends its logs over
+  syslog on localhost to a Fluent Bit native sidecar (no file, no claim) that keeps refusals,
+  errors and changes by twelve routing rows of built-in filters and forwards them to the
+  observability team's main Fluent Bit, into a three-day candidate index that an OpenSearch
+  transform aggregates (contract v3, docs/contracts/polaris-logs.md; #241, #247).
+  charts/polaris-log-sidecar is the ConfigMap and the values that add the sidecar to Polaris
+  (#242, #246); release.py installs it in step 1 after the claim and before Polaris, and a
+  failure stops the install (#248). On the gate, check-logs also runs Polaris 1.6.0's syslog
+  proofs (#243) and the sidecar smoke step, syslog frames through the rendered filters and
+  Polaris's handler reconnecting after a sidecar restart (#246). The sidecar's output host and
+  port are POLARIS_LOG_OUTPUT_HOST and POLARIS_LOG_OUTPUT_PORT, empty placeholders until the
+  observability team gives them. Both paths run side by side until the old one is removed.
+- Backups (2026-10-12, ADR-043, #83). polaris-pg archives its WAL and takes a daily base
   backup through the Barman Cloud Plugin into `POLARIS_BACKUP_BUCKET`, with its own key in
   `polaris-backup-s3`; step 0 requires the plugin and its `ObjectStore` CRD. The gate
   installs cert-manager and the plugin from pinned manifests, and the smoke gate's
