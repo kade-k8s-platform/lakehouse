@@ -53,6 +53,11 @@ POD_LABELS = {"polaris-join": JOIN,
               "datahub-kafka-client": {release.DATAHUB_KAFKA_CLIENT_LABEL: "true"},
               "datahub-opensearch-client": {release.DATAHUB_OPENSEARCH_CLIENT_LABEL: "true"},
               "datahub-gms-client": {release.DATAHUB_GMS_CLIENT_LABEL: "true"}}
+# Probe sources run once every other probe has finished: they wear Polaris's pod labels, which
+# Polaris's Services select by, so while one runs it is a Ready endpoint that listens on nothing
+# (smoke run 184: ingress -> polaris-api refused). A never-Ready pod cannot do it: kubectl run -i
+# waits for Ready.
+LAST = ("polaris-pod",)
 # The gate's Service for CNPG's exporter on polaris-pg's instances (ADR-046 §4).
 METRICS_SERVICE = "gate-polaris-pg-metrics"
 PG_METRICS_PORT = 9187

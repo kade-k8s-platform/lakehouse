@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -321,11 +322,15 @@ class Probe(unittest.TestCase):
     def test_check_network_runs_every_probe_pod_at_once(self):
         # Each probe waits until all of them have started: run one after another, the first
         # one's wait breaks and its source has no results.
-        started = threading.Barrier(len(network.source_namespaces(ENV)), timeout=5)
+        started = threading.Barrier(
+            len(network.source_namespaces(ENV)) - len(network.LAST), timeout=5)
 
         def subprocess_run(argv, **kwargs):
             if "run" not in argv:
                 return subprocess.CompletedProcess(argv, 0, "", "")
+            if argv[argv.index("run") + 1].startswith("check-network-polaris-pod"):
+                return subprocess.CompletedProcess(argv, 0, "".join(
+                    f"{a} blocked\n" for a in argv[argv.index("python3") + 3:]), "")
             try:
                 started.wait()
             except threading.BrokenBarrierError:
@@ -338,6 +343,33 @@ class Probe(unittest.TestCase):
                 ENV, {"standin_images": {"recorder": {"image": PYTHON}}})
         self.assertEqual([p for p in problems if "no result" in p], [])
         self.assertEqual(len(lines) + len(problems), len(network.CASES))
+
+    def test_the_probe_with_polaris_labels_runs_after_every_other_probe_has_finished(self):
+        # Polaris's Services select pods by those labels: while this probe pod runs, it is a
+        # Ready endpoint that resets what is sent to it (smoke run 184: ingress -> polaris-api
+        # refused). Nothing else may be connecting then.
+        lock = threading.Lock()
+        finished, at_start = [], []
+
+        def subprocess_run(argv, **kwargs):
+            if "run" not in argv:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            name = argv[argv.index("run") + 1]
+            if name.startswith("check-network-polaris-pod"):
+                with lock:
+                    at_start.extend(finished)
+            else:
+                time.sleep(0.05)  # long enough that a concurrent polaris-pod would start first
+                with lock:
+                    finished.append(name)
+            out = "".join(f"{a} blocked\n" for a in argv[argv.index("python3") + 3:])
+            return subprocess.CompletedProcess(argv, 0, out, "")
+
+        with mock.patch.object(gate.subprocess, "run", side_effect=subprocess_run):
+            gate.check_network(ENV, {"standin_images": {"recorder": {"image": PYTHON}}})
+        others = len(network.source_namespaces(ENV)) - len(network.LAST)
+        self.assertEqual(len(at_start), others)
+        self.assertEqual(network.LAST, ("polaris-pod",))
 
     def test_the_script_reports_reached_and_refused_from_real_sockets(self):
         # A listening port and a closed one, on this machine.

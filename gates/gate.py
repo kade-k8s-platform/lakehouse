@@ -2335,8 +2335,11 @@ def check_network(env, pins):
         by_address = network.parse_probe(out.stdout)
         return {t: by_address.get(addresses[t]) for t in wanted}
 
-    with concurrent.futures.ThreadPoolExecutor(len(sources)) as pool:
-        results = dict(zip(sources, pool.map(probe, sources)))
+    together = [source for source in sources if source not in network.LAST]
+    with concurrent.futures.ThreadPoolExecutor(len(together)) as pool:
+        results = dict(zip(together, pool.map(probe, together)))
+    for source in network.LAST:
+        results[source] = probe(source)
     return network.report(network.CASES, results)
 
 
