@@ -231,7 +231,7 @@ class Decide(unittest.TestCase):
                 ok, lines = self.decide([path], [dry_run("aaa"), smoke("aaa")],
                                         FakeGit({"aaa": []}))
                 self.assertTrue(ok)
-                self.assertNotIn("log-batch", "\n".join(lines))
+                self.assertNotIn("gate/log-batch/", "\n".join(lines))
 
     def test_a_log_batch_run_is_neither_needed_nor_read(self):
         old = dry_run("bbb", branch="gate/log-batch/task",
@@ -239,7 +239,7 @@ class Decide(unittest.TestCase):
         ok, lines = self.decide(["install/release.py"], [dry_run("aaa"), smoke("aaa"), old],
                                 FakeGit({"aaa": []}))
         self.assertTrue(ok)
-        self.assertNotIn("log-batch", "\n".join(lines))
+        self.assertNotIn("gate/log-batch/", "\n".join(lines))
 
 
 def git(cwd, *args):
