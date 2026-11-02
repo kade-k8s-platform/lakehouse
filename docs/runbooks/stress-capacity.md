@@ -104,7 +104,6 @@ target sizing changes (ADR-053 §7).
 kind delete cluster --name lakehouse-gate
 python3 gates/gate.py up
 python3 gates/gate.py secrets --direct
-python3 gates/gate.py batch-image
 python3 gates/gate.py standins --direct
 python3 gates/gate.py install --fresh
 ```

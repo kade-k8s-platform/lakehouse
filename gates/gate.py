@@ -61,7 +61,7 @@
                   (ADR-077 §1): release.py's own functions, step 0 then Datahub's part of step
                   1 (its network policies, datahub-pg, datahub-kafka, datahub-opensearch,
                   Datahub), in ADR-045's order; the first step with a problem stops the rest.
-                  No last release, seed, gate-policies, Polaris, log batch or console. Prints
+                  No last release, seed, gate-policies, Polaris or console. Prints
                   each step's notes, then the image pulls and the timeline as `install` does,
                   each step timed under its name.
   seed          writes known data through the last release's Polaris before the upgrade
@@ -166,8 +166,6 @@
                   images/polaris-console/Dockerfile, then loaded into the kind cluster.
                   --build stops before the load and needs no cluster, so smoke runs it while
                   kind starts; --load loads the image it built.
-  batch-image     builds the log batch's image from images/polaris-log-batch, tagged as
-                  install/release.py names it, and loads it into the kind cluster (ADR-036).
   check-logs      runs the sidecar chain (ADR-081, ADR-082):
                   gates/syslog_probe.py runs Polaris 1.6.0's syslog proofs (ADR-081): a
                   clone of the release's Deployment with the syslog handler on, against a plain
@@ -223,7 +221,7 @@
 Every kubectl and helm call names the gate's context, and a namespace where the object has
 one. Nothing here reaches any cluster but the kind cluster it creates (ADR-017).
 
-Usage: gate.py tools BIN_DIR [NAME...] | up | secrets | standins | check-standins | check-traffic FILE... | install [--fresh] [--dry-run] | install --datahub-only | seed | check-migration | rebuild-replica | check-polaris-pg | check-datahub-pg | check-datahub-kafka | check-datahub-opensearch | check-datahub | check-datahub-ingestion | check-datahub-recovery | check-polaris | console-image [--build|--load] | batch-image | check-logs | check-console | check-iceberg | check-restore | gate-policies | check-network | check-metrics
+Usage: gate.py tools BIN_DIR [NAME...] | up | secrets | standins | check-standins | check-traffic FILE... | install [--fresh] [--dry-run] | install --datahub-only | seed | check-migration | rebuild-replica | check-polaris-pg | check-datahub-pg | check-datahub-kafka | check-datahub-opensearch | check-datahub | check-datahub-ingestion | check-datahub-recovery | check-polaris | console-image [--build|--load] | check-logs | check-console | check-iceberg | check-restore | gate-policies | check-network | check-metrics
 """
 
 import base64
@@ -2528,16 +2526,6 @@ def check_console_command(env, image, name):
             env["POLARIS_CONSOLE_API_URL"], release.POLARIS_REALM]
 
 
-def batch_image_commands(directory=release.BATCH_IMAGE_DIR,
-                         registry=release.DEFAULT_IMAGE_REGISTRY):
-    """Build the log batch's image, tagged as release.py names it in that registry (ADR-042),
-    and load it into kind, which runs it without pulling."""
-    image = release.batch_image(directory, registry)
-    return [["docker", "build", "--file", os.path.join(directory, "Dockerfile"),
-             "--tag", image, directory],
-            ["kind", "load", "docker-image", image, "--name", CLUSTER]]
-
-
 def _git(repo, *args):
     return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, check=False)
 
@@ -2710,11 +2698,6 @@ def main(argv):
                 run(commands[3])
             if argv[2:] != ["--build"]:
                 run(commands[4])
-        return 0
-    if argv[1:] == ["batch-image"]:
-        env = release.load_env(ROOT, os.environ)
-        for command in batch_image_commands(registry=release.image_registry(env)):
-            run(command)
         return 0
     if argv[1:] == ["check-logs"]:
         env = release.load_env(ROOT, os.environ)

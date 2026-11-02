@@ -1,5 +1,5 @@
 """The stress run's driver (ADR-053 §2, §4; ADR-054): on the gate's kind cluster with a stress
-install (`gate.py up`, `secrets --direct`, `batch-image`, `standins --direct`,
+install (`gate.py up`, `secrets --direct`, `standins --direct`,
 `install --fresh`), it seeds the tables, runs k6 step by step, and checks the result. Every
 file it keeps goes under OUT, which stress.yml uploads.
 
