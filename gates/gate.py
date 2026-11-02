@@ -312,6 +312,10 @@ GATE_LOGS_SIZE = "1Gi"
 # kind's own default, which the class `standard` keeps.
 STANDARD_NODE_PATHS = [{"node": "DEFAULT_PATH_FOR_NON_LISTED_NODES",
                         "paths": ["/var/local-path-provisioner"]}]
+# What the last release's release.py reads from .env for the claim polaris-logs, which the
+# template no longer holds: the upgrade job runs that script over the gate's .env first.
+# L7g removes it with the shared class once no release that needs it is the upgrade's base.
+LEGACY_ENV = {"POLARIS_LOGS_STORAGE_CLASS": SHARED_CLASS, "POLARIS_LOGS_SIZE": GATE_LOGS_SIZE}
 # The Polaris console's image, built here from a pinned polaris-tools commit (ADR-028).
 CONSOLE_IMAGE_DIR = os.path.join(ROOT, "images", "polaris-console")
 CONSOLE_IMAGE_REPOSITORY = "lakehouse/polaris-console"
@@ -492,13 +496,13 @@ def console_settings(ns):
 
 def gate_env(template_text, gen=init_env.generate, direct=False):
     """`.env` for the gate: its context, the stand-ins' endpoints (`direct`: see
-    standin_endpoints), the S3 stand-in's credentials, the console's settings, the log claim's
-    shared class, the sidecar's destination (ADR-081) and a namespace label per caller class
+    standin_endpoints), the S3 stand-in's credentials, the console's settings, the last
+    release's claim variables (LEGACY_ENV), the sidecar's destination (ADR-081) and a namespace label per caller class
     (ADR-048 §6); init_env fills the rest."""
     template = init_env.parse(template_text)
     fixed = {"KUBE_CONTEXT": CONTEXT, **standin_endpoints(template["NS_STANDINS"], direct),
              **console_settings(template["NS_CATALOG_POLARIS"]),
-             "POLARIS_LOGS_STORAGE_CLASS": SHARED_CLASS, "POLARIS_LOGS_SIZE": GATE_LOGS_SIZE,
+             **LEGACY_ENV,
              "DATAHUB_INGEST_POLARIS_CATALOGS": INGEST_CATALOG,
              **network.GATE_CALLER_LABELS}
     lines = []
@@ -509,6 +513,7 @@ def gate_env(template_text, gen=init_env.generate, direct=False):
         elif name in GATE_ENV_GENERATED:
             line = f"{name}={gen(name)}"
         lines.append(line)
+    lines += [f"{name}={value}" for name, value in LEGACY_ENV.items() if name not in template]
     return "\n".join(lines) + "\n"
 
 
