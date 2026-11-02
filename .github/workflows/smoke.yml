@@ -15,15 +15,13 @@
 # as an ordinary principal writes a table into a catalog on the S3 endpoint and reads it back
 # while the policy refuses what it is not granted (ADR-026, ADR-031), a backup of polaris-pg
 # through the plugin restores into polaris-pg-restore, which holds the realm's root principal
-# and that catalog (ADR-043), the log batch publishes
-# the hour of traffic sent to both Polaris pods once, keeping the refused requests and counting
-# the reads, and a stand-in Fluent Bit reads it as the contract (ADR-024, ADR-036), and the
-# recorder saw those exchanges and none it must not (ADR-034).
+# and that catalog (ADR-043), the log sidecar forwards both pods' syslog to a stand-in Fluent
+# Bit (ADR-081, ADR-082), and the recorder saw those exchanges and none it must not (ADR-034).
 # The console, built from its pinned commit while kind starts, is checked last: a
 # maintainer signs in as the browser does and may only read; those steps never block, and a
 # last step warns of any that failed (ADR-028).
 # Beside it, on a kind cluster of its own, the datahub-recovery job runs the set-up without the
-# console's and the batch's images, installs Datahub alone from this commit, fresh on every
+# console's image, installs Datahub alone from this commit, fresh on every
 # trigger (step 0 and Datahub's part of step 1, ADR-077), then check-datahub, then
 # check-datahub-recovery: OpenSearch's volume lost, then Kafka's, and Datahub rebuilds its
 # indices and topics (ADR-071 §8), printing its phase timeline (ADR-077 §3). Both jobs run on
@@ -108,9 +106,6 @@ jobs:
           fi
           python3 gates/gate.py console-image --load
 
-      - name: The log batch's image, built from this checkout and loaded into kind (ADR-036)
-        run: python3 gates/gate.py batch-image
-
       - name: The stand-ins, SeaweedFS and OPA (gate only, ADR-031)
         run: python3 gates/gate.py standins
 
@@ -190,7 +185,7 @@ jobs:
           set -euo pipefail
           python3 gates/gate.py check-restore | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: The batch publishes both pods' traffic once; a stand-in Fluent Bit reads it as the contract (ADR-024, ADR-036)
+      - name: The log sidecar chain: Polaris's syslog proofs, then the sidecar into the Fluent Bit stand-in (ADR-081, ADR-082)
         run: |
           set -euo pipefail
           python3 gates/gate.py check-logs | tee -a "$GITHUB_STEP_SUMMARY"
@@ -265,9 +260,7 @@ jobs:
           kubectl --context "$KUBE_CONTEXT" -n "$NS_STANDINS" logs deployment/recorder --tail=60 || true
           kubectl --context "$KUBE_CONTEXT" -n "$NS_CATALOG_POLARIS" get deployment,configmap -o wide || true
           kubectl --context "$KUBE_CONTEXT" -n "$NS_CATALOG_POLARIS" logs -l app.kubernetes.io/name=polaris --tail=80 --prefix || true
-          kubectl --context "$KUBE_CONTEXT" -n "$NS_CATALOG_POLARIS" get cronjob,job,pods -l app.kubernetes.io/name=polaris-log-batch -o wide || true
-          kubectl --context "$KUBE_CONTEXT" -n "$NS_CATALOG_POLARIS" logs -l app.kubernetes.io/name=polaris-log-batch --tail=40 --prefix || true
-          kubectl --context "$KUBE_CONTEXT" -n "$NS_CATALOG_POLARIS" logs -l app.kubernetes.io/name=fluent-bit-standin --tail=40 --prefix || true
+          kubectl --context "$KUBE_CONTEXT" -n "$NS_STANDINS" logs deployment/main-fluent-bit-standin --tail=40 || true
 
   # check-datahub-recovery deletes volumes, so it runs on a cluster of its own, after
   # check-datahub has shown Datahub working on it (ADR-071 §8, ADR-075).
@@ -303,8 +296,8 @@ jobs:
       - name: The stand-ins, SeaweedFS and OPA (gate only, ADR-031)
         run: python3 gates/gate.py standins
 
-      # Datahub alone, fresh on every trigger: the two checks below read nothing of Polaris's,
-      # the console's or the log batch's (ADR-077 §1).
+      # Datahub alone, fresh on every trigger: the two checks below read nothing of Polaris's
+      # or the console's (ADR-077 §1).
       - name: Install Datahub alone from this commit, step 0 then Datahub's part of step 1 (ADR-077)
         run: |
           set -euo pipefail
