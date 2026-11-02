@@ -72,6 +72,8 @@ installed (ADR-081, ADR-082). Installing this release over a cluster that ran an
 - The claim stays: it was applied with kubectl, outside Helm, so no `helm upgrade` removes it.
 - The Helm release `polaris-log-batch` stays and its CronJob keeps running on its schedule
   against the claim; this install no longer upgrades it.
+- An empty POLARIS_LOG_OUTPUT_HOST in `.env` now stops the install (step 1 d, after the bootstrap,
+  before Polaris is touched): the earlier release only said so. Set it before installing.
 - Polaris's pods roll once: they lose the claim mount and the file appender; the sidecar
   already forwards their logs.
 - Cleaning up is manual, destructive and needs Kade's approval when it runs (ADR-004):
