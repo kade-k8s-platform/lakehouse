@@ -1,39 +1,17 @@
-"""Checks lines against the log contract's JSON schemas (docs/contracts/, ADR-024, ADR-036).
+"""Checks a document against a JSON schema of the log contract (docs/contracts/): contract v3's
+schemas (ADR-081, ADR-082).
 
 The schemas are JSON Schema (2020-12), so the observability team can use them with their own
 tools. This checker covers only the keywords those files use, with the Python standard library,
 so the gate needs no new package; a schema using any other keyword is refused, never ignored.
 """
 
-import json
-import os
 import re
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-CONTRACTS = os.path.join(os.path.dirname(HERE), "docs", "contracts")
 ANNOTATIONS = {"$schema", "title", "description"}
 KEYWORDS = ANNOTATIONS | {"type", "required", "properties", "additionalProperties", "items",
                           "pattern", "enum", "const", "minimum"}
 TYPES = {"object": dict, "array": list, "string": str, "null": type(None), "boolean": bool}
-
-
-# The schema of each row of an aggregated file, by its report_type (contract v2).
-ROW_SCHEMAS = {"summary": "summary", "resource": "resource", "principal": "principal",
-               "app_dropped": "app-dropped"}
-
-
-def load(name):
-    """`processed`, or a name in ROW_SCHEMAS: docs/contracts/polaris-logs-<name>.schema.json."""
-    with open(os.path.join(CONTRACTS, f"polaris-logs-{name}.schema.json")) as f:
-        return json.load(f)
-
-
-def row_problems(row):
-    """A row of an aggregated file against the schema its report_type names."""
-    kind = row.get("report_type") if isinstance(row, dict) else None
-    if kind not in ROW_SCHEMAS:
-        return [f"report_type: {kind!r} is no row type of the contract"]
-    return problems(row, load(ROW_SCHEMAS[kind]))
 
 
 def _is(value, kind):
@@ -83,22 +61,3 @@ def problems(value, schema, at=""):
 
 def _join(at, key):
     return f"{at}.{key}" if at else key
-
-
-def check_lines(text, schema):
-    """JSON lines against `schema` -> (lines that hold, ['line N: problem', ...])."""
-    good, bad = 0, []
-    for n, line in enumerate(text.splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            doc = json.loads(line)
-        except ValueError:
-            bad.append(f"line {n}: not JSON")
-            continue
-        found = problems(doc, schema)
-        if found:
-            bad += [f"line {n}: {p}" for p in found]
-        else:
-            good += 1
-    return good, bad

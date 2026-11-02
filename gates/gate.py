@@ -168,20 +168,8 @@
                   kind starts; --load loads the image it built.
   batch-image     builds the log batch's image from images/polaris-log-batch, tagged as
                   install/release.py names it, and loads it into the kind cluster (ADR-036).
-  check-logs      follows traffic to the hand-off (ADR-024, ADR-036): gates/logs_traffic.sh in
-                  a short-lived curl pod makes the catalog gate_logs on the S3 endpoint, then
-                  sends each Polaris pod reads with root's token, requests without one, a 400,
-                  a 404 and a table made, each with its own X-Request-ID; a Job from the
-                  batch's CronJob runs with its clock past that hour, then again; a stand-in
-                  Fluent Bit (pinned, the claim read-only) reads processed-logs/ and
-                  aggregated-logs/. Every line and row it read must hold contract v2
-                  (gates/contract.py) and every summary's books balance; each refused request
-                  must be kept once from its pod, no read kept but all counted on the rows; the
-                  policy's rules on Polaris's own lines: the 404s dropped with their
-                  application lines (3'), the 400s and the catalog made kept with theirs (2b),
-                  each commit counted on its table's row (2a); both pods' files read; the second
-                  run must change no file.
-                  Then gates/syslog_probe.py runs Polaris 1.6.0's syslog proofs (ADR-081): a
+  check-logs      runs the sidecar chain (ADR-081, ADR-082):
+                  gates/syslog_probe.py runs Polaris 1.6.0's syslog proofs (ADR-081): a
                   clone of the release's Deployment with the syslog handler on, against a plain
                   receiver and against Fluent Bit's syslog input; see that module.
                   Then gates/sidecar_smoke.py (ADR-082): syslog frames through the rendered
@@ -240,7 +228,6 @@ Usage: gate.py tools BIN_DIR [NAME...] | up | secrets | standins | check-standin
 
 import base64
 import concurrent.futures
-import copy
 import datetime as dt
 import hashlib
 import io
@@ -259,7 +246,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "install"))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
-import contract  # noqa: E402
 import init_env  # noqa: E402
 import metrics  # noqa: E402
 import network  # noqa: E402
@@ -330,28 +316,8 @@ STANDARD_NODE_PATHS = [{"node": "DEFAULT_PATH_FOR_NON_LISTED_NODES",
 CONSOLE_IMAGE_DIR = os.path.join(ROOT, "images", "polaris-console")
 CONSOLE_IMAGE_REPOSITORY = "lakehouse/polaris-console"
 CONSOLE_PORT = 8080
-# The log batch on the gate (ADR-036): requests sent to each Polaris pod, how long a run of the
-# batch or of the stand-in Fluent Bit may take, and where the claim is mounted to be read.
-LOGS_REQUESTS = 5
-LOGS_CATALOG = "gate_logs"
-LOGS_NAMESPACE = "logs"
-LOGS_POLICY_KINDS = ("invalid", "missing", "commit")
-APP_LINE_LOGGERS = ("org.apache.polaris.service.admin.PolarisServiceImpl",
-                    "org.apache.polaris.service.exception.IcebergExceptionMapper")
+# How long a wait may take: the default of wait_for.
 LOGS_TIMEOUT = 300
-LOGS_MOUNT = "/logs"
-OUTPUT_DIRS = ("processed-logs", "aggregated-logs")
-# The stand-in reads as a user that is neither root nor Polaris's and the batch's (10000), as
-# the observability team's reader would (ADR-024).
-READER_UID = 65534
-# Run in a short-lived pod with the claim at $1, read-only: one line per output file, its
-# SHA-256, its line count and its path under the claim.
-LOGS_LISTING = """cd "$1" || exit 1
-for f in processed-logs/*.jsonl aggregated-logs/*.jsonl; do
-  [ -f "$f" ] || continue
-  printf '%s %s %s\\n' "$(sha256sum < "$f" | cut -c1-64)" "$(($(wc -l < "$f")))" "$f"
-done
-"""
 
 
 def load_pins(path=os.path.join(HERE, "pins.json")):
@@ -2567,315 +2533,6 @@ def batch_image_commands(directory=release.BATCH_IMAGE_DIR,
             ["kind", "load", "docker-image", image, "--name", CLUSTER]]
 
 
-def logs_request_ids(prefix, count, pod_names, failing=False):
-    """The X-Request-ID each request carries, as logs_traffic.sh makes it -> (its pod, its kind),
-    each kind for a rule of the audit policy (contract v2): `read`, root listing the catalogs,
-    which it counts (6); `denied`, the same without a token, which it keeps (3); once per pod,
-    `invalid`, a table made without a schema, 400, refused before anything is written, kept
-    with its application line (2b); `missing`, a table that does not exist, 404, dropped with
-    its application line (3'); `commit`, a table made, whose commit counts on its row (2a).
-    `catalog`, through the Service, so on no pod known in advance: LOGS_CATALOG made, its
-    application line kept (2b). With `failing` (Create Fixtures, ADR-040, logs_traffic.sh's
-    LOGS_DOWN_ENDPOINT), also LOGS_CATALOG_down made (`catalog`) and once per pod `failed`, a
-    table made there, 500, kept with its ERROR line and the line's `exception` (1)."""
-    sent = {f"{prefix}-{pod}-{kind}-{n}": (pod, kind) for pod in pod_names
-            for n in range(1, count + 1) for kind in ("read", "denied")}
-    sent.update({f"{prefix}-{pod}-{kind}-1": (pod, kind) for pod in pod_names
-                 for kind in LOGS_POLICY_KINDS})
-    sent[f"{prefix}-setup-catalog"] = (None, "catalog")
-    if failing:
-        sent.update({f"{prefix}-{pod}-failed-1": (pod, "failed") for pod in pod_names})
-        sent[f"{prefix}-setup-down-catalog"] = (None, "catalog")
-    return sent
-
-
-def logs_table(request_id):
-    """The table a `commit` request makes, named for it as logs_traffic.sh names it."""
-    return request_id.replace("-", "_")
-
-
-def logs_traffic_command(env, image, name, prefix, count, pods, down=None):
-    """The pod that runs logs_traffic.sh (on stdin) with root's credentials against each of
-    `pods`, (name, URL) pairs, LOGS_CATALOG on the S3 endpoint in `env`; with `down`, its
-    LOGS_DOWN_ENDPOINT (Create Fixtures, ADR-040)."""
-    creds = [{"name": var, "valueFrom": {"secretKeyRef": {"name": release.POLARIS_ROOT_SECRET,
-                                                         "key": key}}}
-             for var, key in (("ROOT_CLIENT_ID", "clientId"),
-                              ("ROOT_CLIENT_SECRET", "clientSecret"))]
-    if down:
-        creds.append({"name": "LOGS_DOWN_ENDPOINT", "value": down})
-    overrides = {"spec": {"containers": [{"name": name, "image": image, "env": creds,
-                                          "stdin": True, "stdinOnce": True}]}}
-    return ["kubectl", "--context", CONTEXT, "-n", env["NS_CATALOG_POLARIS"], "run", name,
-            CHECK_POD_LABEL, f"--image={image}", "--restart=Never", "--rm", "-i", "--quiet",
-            "--pod-running-timeout=3m", "--override-type=strategic",
-            "--overrides", json.dumps(overrides),
-            "--command", "--", "sh", "-s", "--",
-            f"http://{release.POLARIS}:{POLARIS_API_PORT}", release.POLARIS_REALM, str(count),
-            prefix, LOGS_CATALOG, env["S3_ENDPOINT"], env["S3_REGION"],
-            env["POLARIS_WAREHOUSE_BUCKET"], *[part for pod in pods for part in pod]]
-
-
-def batch_now(t):
-    """The clock the gate gives the batch: the hour after `t` began, plus the batch's 60 s of
-    grace and one more, so the hour `t` is in is publishable (ADR-036)."""
-    hour = t.astimezone(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
-    return (hour + dt.timedelta(hours=1, seconds=61)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def batch_job(cronjob, name, now):
-    """A Job from the CronJob's own template, the batch told `--now`."""
-    template = copy.deepcopy(cronjob["spec"]["jobTemplate"])
-    container = template["spec"]["template"]["spec"]["containers"][0]
-    container["args"] = container.get("args", []) + ["--now", now]
-    metadata = {"name": name, "namespace": cronjob["metadata"]["namespace"]}
-    if template.get("metadata", {}).get("labels"):
-        metadata["labels"] = template["metadata"]["labels"]
-    return {"apiVersion": "batch/v1", "kind": "Job", "metadata": metadata,
-            "spec": template["spec"]}
-
-
-def job_outcome(job):
-    """`succeeded`, `failed`, or None while the Job runs."""
-    status = job.get("status", {})
-    if status.get("succeeded"):
-        return "succeeded"
-    if status.get("failed"):
-        return "failed"
-    return None
-
-
-def json_lines(text):
-    """The lines of `text` that are JSON objects; anything else (a log line, a traceback) is
-    skipped."""
-    out = []
-    for line in text.splitlines():
-        if line.startswith("{"):
-            try:
-                out.append(json.loads(line))
-            except ValueError:
-                pass
-    return out
-
-
-batch_events = fluent_bit_records = json_lines
-
-
-def _logs_volume(read_only):
-    return ({"name": release.POLARIS_LOGS,
-             "persistentVolumeClaim": {"claimName": release.POLARIS_LOGS,
-                                       "readOnly": read_only}},
-            {"name": release.POLARIS_LOGS, "mountPath": LOGS_MOUNT, "readOnly": read_only})
-
-
-def logs_listing_command(env, image, name):
-    """The pod that runs LOGS_LISTING (on stdin) with the claim mounted read-only."""
-    volume, mount = _logs_volume(True)
-    overrides = {"spec": {"containers": [{"name": name, "image": image, "stdin": True,
-                                          "stdinOnce": True, "volumeMounts": [mount]}],
-                          "volumes": [volume]}}
-    return ["kubectl", "--context", CONTEXT, "-n", env["NS_CATALOG_POLARIS"], "run", name,
-            CHECK_POD_LABEL, f"--image={image}", "--restart=Never", "--rm", "-i", "--quiet",
-            "--pod-running-timeout=3m", "--override-type=strategic",
-            "--overrides", json.dumps(overrides), "--command", "--", "sh", "-s", "--",
-            LOGS_MOUNT]
-
-
-def parse_listing(text):
-    """LOGS_LISTING's lines -> {path: {"sha256": ..., "lines": ...}}."""
-    out = {}
-    for line in text.splitlines():
-        parts = line.split(" ", 2)
-        if len(parts) == 3:
-            out[parts[2]] = {"sha256": parts[0], "lines": int(parts[1])}
-    return out
-
-
-def fluent_bit_pod(env, image, name):
-    """The stand-in for the observability team's Fluent Bit (ADR-024, ADR-036): in Polaris's
-    namespace, the claim mounted read-only, it tails both output directories from their start
-    and prints every line as JSON with its path, then exits once it has read them all."""
-    volume, mount = _logs_volume(True)
-    paths = ",".join(f"{LOGS_MOUNT}/{d}/*.jsonl" for d in OUTPUT_DIRS)
-    return {"apiVersion": "v1", "kind": "Pod",
-            "metadata": {"name": name, "namespace": env["NS_CATALOG_POLARIS"],
-                         "labels": {"app.kubernetes.io/name": "fluent-bit-standin"}},
-            "spec": {
-                "restartPolicy": "Never",
-                "securityContext": {"runAsNonRoot": True, "runAsUser": READER_UID,
-                                    "runAsGroup": READER_UID,
-                                    "seccompProfile": {"type": "RuntimeDefault"}},
-                "containers": [{
-                    "name": "fluent-bit", "image": image,
-                    "command": ["/fluent-bit/bin/fluent-bit"],
-                    "args": ["-R", "/fluent-bit/etc/parsers.conf",
-                             "-i", "tail", "-p", f"path={paths}", "-p", "read_from_head=true",
-                             "-p", "exit_on_eof=true", "-p", "parser=json",
-                             "-p", "path_key=source_file", "-p", "buffer_max_size=1M",
-                             "-o", "stdout", "-p", "format=json_lines",
-                             "-p", "json_date_key=false", "-f", "1"],
-                    "securityContext": {"allowPrivilegeEscalation": False,
-                                        "readOnlyRootFilesystem": True,
-                                        "capabilities": {"drop": ["ALL"]}},
-                    "volumeMounts": [mount]}],
-                "volumes": [volume]}}
-
-
-def logs_problems(sent, pods, events, before, after, records):
-    """What the reader saw against what was sent (ADR-036, contract v2): every line and row
-    holds the contract, every file was read whole, every summary's books balance, each kept
-    request was read once from its pod, no counted one was kept but the rows count them all,
-    the policy's rules 2a, 2b and 3' held on Polaris's own lines (logs_request_ids), every
-    pod's file was read, and a second run changed nothing. Returns (problems, notes)."""
-    problems = []
-    first, second = events
-    published = [e["hour"] for e in first if e.get("event") == "published"]
-    if not published:
-        why = "; ".join(e.get("reason", e.get("event", "")) for e in first) or "no output"
-        problems.append(f"the first run published no hour: {why}")
-    if any(e.get("event") == "published" for e in second):
-        problems.append("the second run published again: "
-                        + ", ".join(e["hour"] for e in second if e.get("event") == "published"))
-    for path in sorted(set(before) | set(after)):
-        if before.get(path) != after.get(path):
-            problems.append(f"the second run changed {path}: {before.get(path)} -> "
-                            f"{after.get(path)}")
-    hours = {d: {p.split("/", 1)[1] for p in after if p.startswith(d + "/")}
-             for d in OUTPUT_DIRS}
-    for missing in sorted(hours["processed-logs"] ^ hours["aggregated-logs"]):
-        where = "aggregated-logs" if missing in hours["processed-logs"] else "processed-logs"
-        problems.append(f"{where}/{missing} is missing: an hour has both files")
-
-    processed_schema = contract.load("processed")
-    read, rows, seen, by_rid = {}, [], {}, {}
-    for record in records:
-        record = dict(record)
-        path = record.pop("source_file", "")
-        rel = path[len(LOGS_MOUNT) + 1:] if path.startswith(LOGS_MOUNT + "/") else path
-        read[rel] = read.get(rel, 0) + 1
-        kind = rel.split("/", 1)[0]
-        if kind == "aggregated-logs":
-            problems += [f"{rel}: {p}" for p in contract.row_problems(record)]
-            rows.append((rel, record))
-        elif kind == "processed-logs":
-            problems += [f"{rel}: {p}" for p in contract.problems(record, processed_schema)]
-            rid = record.get("mdc", {}).get("requestId")
-            if rid in sent:
-                seen.setdefault(rid, []).append(record.get("hostName"))
-                by_rid.setdefault(rid, []).append(record)
-        else:
-            problems.append(f"a record from {path or 'no file'}, outside the hand-off")
-    for path in sorted(set(after) | set(read)):
-        want = after.get(path, {}).get("lines", 0)
-        if read.get(path, 0) != want:
-            problems.append(f"{path}: the reader read {read.get(path, 0)} lines of {want}")
-
-    summaries = [(rel, r) for rel, r in rows if r.get("report_type") == "summary"]
-    for rel, s in summaries:
-        books = (("lines_in", s.get("processed", 0) + s.get("dropped", 0) + s.get("malformed", 0)),
-                 ("dropped", s.get("access_counted", 0) + s.get("app_dropped_total", 0)
-                  + s.get("app_dropped_404", 0)),
-                 ("access_kept", s.get("access_seen", 0) - s.get("access_counted", 0)),
-                 ("processed", after.get(f"processed-logs/{rel.split('/', 1)[1]}",
-                                         {}).get("lines")))
-        for field, want in books:
-            if s.get(field) != want:
-                problems.append(f"{rel}: {field} is {s.get(field)}, its books say {want}")
-
-    kept = {rid: pod for rid, (pod, kind) in sent.items() if kind == "denied"}
-    counted = {rid: pod for rid, (pod, kind) in sent.items() if kind == "read"}
-    for rid, pod in sorted(kept.items()):
-        hosts = seen.get(rid, [])
-        if hosts != [pod]:
-            problems.append(f"request {rid}, sent to {pod} without a token: read {len(hosts)} "
-                            f"times" + (f", from {', '.join(map(str, hosts))}" if hosts else ""))
-    for rid in sorted(set(counted) & set(seen)):
-        problems.append(f"request {rid}, a read the policy counts, was kept {len(seen[rid])} "
-                        f"times")
-
-    def total(kind, key, value, field):
-        return sum(r.get(field, 0) for _, r in rows
-                   if r.get("report_type") == kind and r.get(key) == value)
-
-    catalogs = "/api/management/v1/catalogs"
-    for what, have, want in (
-            (f"resource {catalogs} reads", total("resource", "resource", catalogs, "reads"),
-             len(kept) + len(counted)),
-            (f"resource {catalogs} auth_denied",
-             total("resource", "resource", catalogs, "auth_denied"), len(kept)),
-            ("principal root reads", total("principal", "user_principal_name", "root", "reads"),
-             len(counted)),
-            ("principal - auth_denied",
-             total("principal", "user_principal_name", "-", "auth_denied"), len(kept))):
-        if have < want:
-            problems.append(f"{what}: {have}, fewer than the {want} sent")
-
-    def of_kind(kind):
-        return sorted(rid for rid, (_, k) in sent.items() if k == kind)
-
-    missing, invalid, commits = of_kind("missing"), of_kind("invalid"), of_kind("commit")
-    for rid in missing:
-        if by_rid.get(rid):
-            problems.append(f"request {rid}, a 404: {len(by_rid[rid])} of its lines kept "
-                            f"({', '.join(r.get('loggerName', '') for r in by_rid[rid])})")
-    for field in ("counted_404", "app_dropped_404"):
-        have = sum(s.get(field, 0) for _, s in summaries)
-        if have < len(missing):
-            problems.append(f"the summaries' {field}: {have}, fewer than the {len(missing)} "
-                            f"404s sent")
-    mapper = APP_LINE_LOGGERS[1]
-    for rid in invalid + of_kind("catalog"):
-        pod, lines = sent[rid][0], by_rid.get(rid, [])
-        access = [r for r in lines if "http_status" in r]
-        app = [r for r in lines if r.get("loggerName") in
-               ((mapper,) if pod else APP_LINE_LOGGERS)]
-        hosts = sorted({r.get("hostName") for r in lines})
-        if len(access) != 1 or not app or (pod and hosts != [pod]):
-            problems.append(f"request {rid}{f', sent to {pod}' if pod else ''}: "
-                            f"{len(access)} access line(s) and {len(app)} application line(s) "
-                            f"kept, from {', '.join(map(str, hosts)) or 'no pod'}; want one "
-                            f"access line and its application line, kept from its pod")
-    for rid in commits:
-        table = (f"/api/catalog/v1/{LOGS_CATALOG}/namespaces/{LOGS_NAMESPACE}/tables/"
-                 f"{logs_table(rid)}")
-        if total("resource", "resource", table, "commit_count") < 1:
-            problems.append(f"resource {table}: no commit counted for request {rid}")
-    failed = of_kind("failed")
-    for rid in failed:
-        pod, lines = sent[rid][0], by_rid.get(rid, [])
-        access = [r for r in lines if r.get("http_status") == 500]
-        errors = [r for r in lines if r.get("level") == "ERROR"
-                  and isinstance(r.get("exception"), dict)]
-        hosts = sorted({r.get("hostName") for r in lines})
-        if len(access) != 1 or not errors or hosts != [pod]:
-            problems.append(f"request {rid}, sent to {pod}: {len(access)} access line(s) of a "
-                            f"500 and {len(errors)} ERROR line(s) with `exception` kept, from "
-                            f"{', '.join(map(str, hosts)) or 'no pod'}; want one access line "
-                            f"and its ERROR line, kept from its pod")
-
-    logged = {p for _, s in summaries for p in s.get("pods", [])}
-    files = {f["file"] for _, s in summaries for f in s.get("sources", [])}
-    for pod in pods:
-        if pod not in logged or f"polaris-{pod}.log" not in files:
-            problems.append(f"pod {pod}: its file polaris-{pod}.log was not read")
-
-    n_files = len(after)
-    notes = [
-        f"The batch published {len(published)} hour(s) ({', '.join(published)}); the second "
-        f"run published nothing and left all {n_files} files as they were.",
-        f"The stand-in Fluent Bit read {len(records)} lines from {len(read)} files, each "
-        f"checked against contract v2, every summary's books balanced.",
-        f"All {len(kept)} kept request IDs (no token, 401) read exactly once, each from the pod "
-        f"it was sent to; none of the {len(counted)} counted (root's reads) kept, all counted "
-        f"on the rows; pods {', '.join(pods)}, both files read.",
-        f"Rules 2a, 2b and 3' on Polaris's own lines: {len(missing)} 404s dropped with their "
-        f"application lines, {len(invalid)} 400s kept with theirs, {len(commits)} commits on "
-        f"their tables' rows; {LOGS_CATALOG} made, its application line kept."
-        + (f" Rule 1: {len(failed)} 500s kept with their ERROR line and its exception."
-           if failed else "")]
-    return problems, ([] if problems else notes)
-
-
 def _git(repo, *args):
     return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, check=False)
 
@@ -2917,56 +2574,6 @@ def wait_for(argv, done, what, timeout=LOGS_TIMEOUT):
         if time.monotonic() > end:
             sys.exit(f"{what}: not done after {timeout} s")
         time.sleep(3)
-
-
-def check_logs(env, pins):
-    """`check-logs`: see the module's docstring. Returns (problems, notes)."""
-    ns, pid = env["NS_CATALOG_POLARIS"], os.getpid()
-    kubectl = ["kubectl", "--context", CONTEXT, "-n", ns]
-    pods = _running(json.loads(output(kubectl + ["get", "pods", "-l", POLARIS_POD_LABELS,
-                                                 "-o", "json"])))
-    if len(pods) < 2:
-        return [f"{len(pods)} Polaris pod(s) running: the check needs both replicas"], []
-    targets = [(p["metadata"]["name"], f"http://{p['status']['podIP']}:{POLARIS_API_PORT}")
-               for p in pods]
-    prefix = f"gate-logs-{pid}"
-    sent = logs_request_ids(prefix, LOGS_REQUESTS, [name for name, _ in targets])
-    with open(os.path.join(HERE, "logs_traffic.sh"), encoding="utf-8") as f:
-        script = f.read()
-    if subprocess.run(logs_traffic_command(env, release.images()["curl"], f"logs-traffic-{pid}",
-                                           prefix, LOGS_REQUESTS, targets),
-                      input=script, text=True, check=False).returncode:
-        return ["the traffic to Polaris's pods failed: see its lines above"], []
-    now = batch_now(dt.datetime.now(dt.timezone.utc))
-    print(f"The batch runs twice with --now {now}.", flush=True)
-    cronjob = json.loads(output(kubectl + ["get", f"cronjob/{release.BATCH}", "-o", "json"]))
-    events, listings = [], []
-    for n in (1, 2):
-        name = f"{release.BATCH}-gate-{pid}-{n}"
-        run(kubectl + ["create", "-f", "-"], json.dumps(batch_job(cronjob, name, now)))
-        outcome = wait_for(kubectl + ["get", f"job/{name}", "-o", "json"], job_outcome,
-                           f"job/{name}")
-        log = output(kubectl + ["logs", f"job/{name}"])
-        print(log, end="", flush=True)
-        if outcome != "succeeded":
-            return [f"job/{name} {outcome}: see its output above"], []
-        events.append(batch_events(log))
-        listings.append(parse_listing(output(
-            logs_listing_command(env, release.images()["curl"], f"logs-listing-{pid}-{n}"),
-            LOGS_LISTING)))
-    reader = fluent_bit_pod(env, pins["standin_images"]["fluent_bit"]["image"],
-                            f"fluent-bit-standin-{pid}")
-    name = reader["metadata"]["name"]
-    run(kubectl + ["apply", "-f", "-"], json.dumps(reader))
-    phase = wait_for(kubectl + ["get", f"pod/{name}", "-o", "json"],
-                     lambda p: p.get("status", {}).get("phase") in ("Succeeded", "Failed")
-                     and p["status"]["phase"], f"pod/{name}")
-    records = fluent_bit_records(output(kubectl + ["logs", f"pod/{name}"]))
-    run(kubectl + ["delete", f"pod/{name}", "--wait=false"])
-    if phase != "Succeeded":
-        return [f"the stand-in Fluent Bit ended {phase}"], []
-    return logs_problems(sent, [name for name, _ in targets], events, listings[0],
-                         listings[1], records)
 
 
 def up(pins, kind_config=KIND_CONFIG):
@@ -3106,9 +2713,7 @@ def main(argv):
         return 0
     if argv[1:] == ["check-logs"]:
         env = release.load_env(ROOT, os.environ)
-        problems, notes = check_logs(env, pins)
-        more_problems, more_notes = syslog_probe.run(env, pins, CONTEXT, run, output)
-        problems, notes = problems + more_problems, notes + more_notes
+        problems, notes = syslog_probe.run(env, pins, CONTEXT, run, output)
         more_problems, more_notes = sidecar_smoke.run(env, pins, CONTEXT, run, output)
         problems, notes = problems + more_problems, notes + more_notes
         for line in notes + problems:
