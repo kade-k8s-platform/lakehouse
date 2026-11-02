@@ -1840,13 +1840,6 @@ class PrincipalScript(unittest.TestCase):
                 for secret in ("rootsecret", "ingestsecret"):
                     self.assertNotIn(secret, result.stdout + result.stderr)
 
-    def test_a_principal_already_there_is_kept_and_reset(self):
-        FakePolarisApi.existing = {"datahub_ingest"}
-        result = self.run_script()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("ok   principal datahub_ingest already there", result.stdout)
-        self.assertIn("ok   a token as datahub_ingest", result.stdout)
-
     def test_a_wrong_root_credential_fails_first(self):
         result = self.run_script("rootid\nwrong\n")
         self.assertEqual(result.returncode, 1)

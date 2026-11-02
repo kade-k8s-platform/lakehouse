@@ -190,8 +190,8 @@ SECRET_ONE_KEYS_TEMPLATE = 'go-template={{range $key, $value := .data}}{{$key}} 
 # Run in the principal's pod with Python (ADR-076 §3): POLARIS_URL REALM PRINCIPAL; root's
 # client ID and secret on stdin, a line each; the principal's in CLIENT_ID and CLIENT_SECRET
 # from its Secret. Looks the principal up first and creates it only on a 404, so a rerun sends
-# no create that PostgreSQL would reject (23505). Prints one line per call, `ok` or `FAIL` with the HTTP status and Polaris's
-# message, never a credential or a token.
+# no create that PostgreSQL would reject (23505). Prints one line per call, `ok` or `FAIL` with
+# the HTTP status and Polaris's message, never a credential or a token.
 PRINCIPAL_SCRIPT = r"""import json, os, sys, urllib.error, urllib.parse, urllib.request
 polaris, realm, name = sys.argv[1:4]
 root_id, root_secret = sys.stdin.readline().strip(), sys.stdin.readline().strip()
