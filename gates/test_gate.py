@@ -846,6 +846,16 @@ class BatchImage(unittest.TestCase):
 
 
 class GateEnv(unittest.TestCase):
+    def test_the_gate_env_sets_the_two_output_variables(self):
+        # L4 put both in .env.template, so gate_env's fixed replacement applies.
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env.template")
+        with open(path, encoding="utf-8") as f:
+            template = f.read()
+        env = gate.init_env.parse(gate.gate_env(template, gen=lambda name: "x"))
+        self.assertEqual(env["POLARIS_LOG_OUTPUT_HOST"],
+                         "main-fluent-bit-standin.standins.svc.cluster.local")
+        self.assertEqual(env["POLARIS_LOG_OUTPUT_PORT"], "24224")
+
     def test_datahub_ingests_the_gates_ingestion_catalog(self):
         # ADR-076 §6: check-datahub-ingestion seeds it and runs the CronJob over it.
         env = gate.init_env.parse(gate.gate_env(TEMPLATE + "DATAHUB_INGEST_POLARIS_CATALOGS=\n",
@@ -1971,8 +1981,19 @@ class CheckRestore(unittest.TestCase):
         self.assertEqual([args for kind, args in events if kind == "apply"], ["Backup"])
         self.assertEqual(kinds.count("archived"), gate.ARCHIVE_TIMEOUT // gate.RESTORE_POLL)
 
+
+class StandinEndpoints(unittest.TestCase):
+    def test_the_sidecar_forwards_to_the_fluent_bit_standin(self):
+        for direct in (False, True):
+            with self.subTest(direct=direct):
+                env = gate.standin_endpoints("standins", direct)
+                self.assertEqual(env["POLARIS_LOG_OUTPUT_HOST"],
+                                 "main-fluent-bit-standin.standins.svc.cluster.local")
+                self.assertEqual(env["POLARIS_LOG_OUTPUT_PORT"], "24224")
+
+
 class Standins(unittest.TestCase):
-    def test_applies_the_list_server_side_then_waits_for_both_deployments(self):
+    def test_applies_the_list_server_side_then_waits_for_every_deployment(self):
         (apply, stdin), (wait, _) = gate.standins_commands(
             STANDIN_ENV, "the stand-ins list")[:2]
         self.assertEqual(stdin, "the stand-ins list")
@@ -1980,7 +2001,7 @@ class Standins(unittest.TestCase):
         self.assertIn("--server-side", apply)
         self.assertEqual(apply[-2:], ["-f", "-"])
         self.assertEqual(wait[:5], ["kubectl", "--context", gate.CONTEXT, "-n", "standins"])
-        for name in ("seaweedfs", "opa", "recorder", "prometheus"):
+        for name in ("seaweedfs", "opa", "recorder", "prometheus", "main-fluent-bit-standin"):
             self.assertIn(f"deployment/{name}", wait)
 
     def test_then_the_backup_bucket_is_created_in_seaweedfs_and_checked(self):

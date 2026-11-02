@@ -9,6 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
 import gate  # noqa: E402
+import network  # noqa: E402
 import seed  # noqa: E402
 import standins  # noqa: E402
 
@@ -187,6 +188,28 @@ class Manifests(unittest.TestCase):
         ports = {p["port"] for p in o[("Service", "recorder")]["spec"]["ports"]}
         self.assertEqual(ports, {8181, 8333, 5432})
 
+    def test_the_fluent_bit_standin_runs_the_pinned_image_with_a_forward_input_and_a_null_output(
+            self):
+        o = objects()
+        c = container(o[("Deployment", "main-fluent-bit-standin")])
+        self.assertEqual(c["image"], PINS["standin_images"]["fluent_bit_syslog"]["image"])
+        self.assertEqual(c["args"], ["-c", "/config/fluent-bit.conf"])
+        conf = o[("ConfigMap", "main-fluent-bit-standin-config")]["data"]["fluent-bit.conf"]
+        self.assertRegex(conf, r"(?m)^\s*Name\s+forward$")
+        self.assertRegex(conf, r"(?m)^\s*Listen\s+0\.0\.0\.0$")
+        self.assertRegex(conf, r"(?m)^\s*Port\s+24224$")
+        self.assertRegex(conf, r"(?m)^\s*Name\s+null$")
+        self.assertRegex(conf, r"(?m)^\s*Match\s+\*$")
+        self.assertNotRegex(conf, r"(?m)^\s*Name\s+(file|stdout)$")
+        self.assertEqual(c["readinessProbe"]["tcpSocket"], {"port": 24224})
+
+    def test_the_service_exposes_24224_and_selects_the_standin(self):
+        svc = objects()[("Service", "main-fluent-bit-standin")]
+        self.assertEqual(svc["metadata"]["namespace"], "standins")
+        self.assertEqual([p["port"] for p in svc["spec"]["ports"]], [24224])
+        self.assertEqual(svc["spec"]["selector"],
+                         {"app.kubernetes.io/name": "main-fluent-bit-standin"})
+
     def test_the_committed_policy_is_the_package_polaris_reads(self):
         with open(os.path.join(HERE, "opa", "policy.rego"), encoding="utf-8") as f:
             self.assertRegex(f.read(), r"(?m)^package polaris\.authz$")
@@ -241,9 +264,44 @@ class NetworkPolicies(unittest.TestCase):
                           "kubernetes.io/metadata.name": "catalog-polaris"}},
                       "podSelector": {"matchLabels": {"lakehouse-gate/check": "true"}}}]}])
 
+    def test_the_fluent_bit_standin_from_polaris_pods_on_24224_only(self):
+        # ADR-081: the sidecar's forward output; the pod, not the namespace, is the caller.
+        spec = self.policies["main-fluent-bit-standin"]
+        self.assertEqual(spec["podSelector"],
+                         {"matchLabels": {"app.kubernetes.io/name": "main-fluent-bit-standin"}})
+        self.assertEqual(spec["policyTypes"], ["Ingress"])
+        self.assertEqual(spec["ingress"], [{
+            "ports": [{"protocol": "TCP", "port": 24224}],
+            "from": [{"namespaceSelector": {"matchLabels": {
+                          "kubernetes.io/metadata.name": "catalog-polaris"}},
+                      "podSelector": {"matchLabels": {
+                          "app.kubernetes.io/name": "polaris",
+                          "app.kubernetes.io/instance": "polaris"}}}]}])
+
+    def test_the_polaris_pod_labels_are_the_charts(self):
+        path = os.path.join(HERE, "..", "charts", "polaris-network-policies", "templates",
+                            "_helpers.tpl")
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        block = text.split('define "polaris-network-policies.polaris"')[1].split("end }}")[0]
+        chart = dict(re.findall(r"^\s+(app\.kubernetes\.io/\S+): (\S+)$", block, re.M))
+        labels = (self.policies["main-fluent-bit-standin"]["ingress"][0]["from"][0]
+                  ["podSelector"]["matchLabels"])
+        self.assertEqual(labels, chart)
+
+    def test_the_fluent_bit_ports_agree(self):
+        path = os.path.join(HERE, "..", "charts", "polaris-log-sidecar", "values.yaml")
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        port = re.search(r"(?m)^output:\n(?:  .*\n)*?  port: (\d+)$", text).group(1)
+        self.assertEqual(standins.FLUENT_BIT_PORT, 24224)
+        self.assertEqual(standins.FLUENT_BIT_PORT, network.FLUENT_BIT_PORT)
+        self.assertEqual(str(standins.FLUENT_BIT_PORT), port)
+
     def test_every_policy_restricts_ingress_only(self):
         self.assertEqual(sorted(self.policies),
-                         ["default-deny-ingress", "opa", "prometheus", "recorder", "seaweedfs"])
+                         ["default-deny-ingress", "main-fluent-bit-standin", "opa",
+                          "prometheus", "recorder", "seaweedfs"])
         for name, spec in self.policies.items():
             self.assertEqual(spec["policyTypes"], ["Ingress"], name)
 
@@ -320,7 +378,7 @@ class Direct(unittest.TestCase):
                 (rule,) = policies[name]["ingress"]
                 self.assertEqual(rule["ports"], [{"protocol": "TCP", "port": port}])
                 self.assertEqual(rule["from"], default[name]["ingress"][0]["from"] + extra)
-        for name in ("default-deny-ingress", "recorder", "prometheus"):
+        for name in ("default-deny-ingress", "recorder", "prometheus", "main-fluent-bit-standin"):
             with self.subTest(name=name):
                 self.assertEqual(policies[name], default[name])
 

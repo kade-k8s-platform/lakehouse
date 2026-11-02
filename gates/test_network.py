@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -103,12 +104,22 @@ class Cases(unittest.TestCase):
         self.assertIs(expected[("query", "console")], False)
         self.assertIs(expected[("gateway", "polaris-pg-metrics")], False)
 
+    def test_the_sidecars_path_is_allowed_from_polaris_pods_and_refused_from_other_pods(self):
+        # ADR-081: one allowed and one refused connection to the main Fluent Bit's input.
+        expected = {(c.source, c.target): c.allowed for c in network.CASES}
+        self.assertIs(expected[("polaris-pod", "main-fluent-bit")], True)
+        self.assertIs(expected[("polaris", "main-fluent-bit")], False)
+        self.assertEqual({c.target: c.allowed for c in network.CASES
+                          if c.source == "polaris-pod"}, {"main-fluent-bit": True})
+        found = [c.allowed for c in network.CASES if c.target == "main-fluent-bit"]
+        self.assertEqual(sorted(found), [False, True])
+
     def test_an_unlabelled_pod_in_polaris_namespace_reaches_only_the_recorder(self):
         expected = {c.target: c.allowed for c in network.CASES if c.source == "polaris"}
         self.assertEqual(expected, {"polaris-api": False, "polaris-pg": False,
                                     "seaweedfs": False, "opa": False, "recorder": True,
                                     "datahub-pg": False, "datahub-kafka": False,
-                                    "datahub-gms": False})
+                                    "datahub-gms": False, "main-fluent-bit": False})
 
     def test_datahub_pg_from_its_clients_and_join_pods_in_datahubs_namespace_only(self):
         # ADR-066 §4: datahub-pg's rules as polaris-pg's, for Datahub's own label.
@@ -188,6 +199,8 @@ class Cases(unittest.TestCase):
         self.assertEqual(addresses["recorder-pg"], "recorder.standins.svc.cluster.local:5432")
         self.assertEqual(addresses["seaweedfs"], "seaweedfs.standins.svc.cluster.local:8333")
         self.assertEqual(addresses["opa"], "opa.standins.svc.cluster.local:8181")
+        self.assertEqual(addresses["main-fluent-bit"],
+                         "main-fluent-bit-standin.standins.svc.cluster.local:24224")
         self.assertEqual(addresses["datahub-pg"],
                          "datahub-pg-rw.catalog-datahub.svc.cluster.local:5432")
         self.assertEqual(addresses["datahub-kafka"],
@@ -216,6 +229,7 @@ class Sources(unittest.TestCase):
             "datahub": ("catalog-datahub", {}),
             "polaris": ("catalog-polaris", None),
             "polaris-join": ("catalog-polaris", None),
+            "polaris-pod": ("catalog-polaris", None),
             "none-join": ("gate-net-none", None),
             "datahub-client": ("catalog-datahub", None),
             "datahub-join": ("catalog-datahub", None),
@@ -226,6 +240,8 @@ class Sources(unittest.TestCase):
     def test_the_join_sources_carry_cnpgs_join_label_and_datahubs_client_its_own(self):
         self.assertEqual(network.POD_LABELS, {
             "polaris-join": {"cnpg.io/jobRole": "join"},
+            "polaris-pod": {"app.kubernetes.io/name": "polaris",
+                            "app.kubernetes.io/instance": "polaris"},
             "none-join": {"cnpg.io/jobRole": "join"},
             "datahub-join": {"cnpg.io/jobRole": "join"},
             "datahub-client": {"lakehouse/datahub-pg-client": "true"},
@@ -294,17 +310,27 @@ class Probe(unittest.TestCase):
         self.assertEqual([a for a in by_name["check-network-none-join"]
                           if a.startswith("--labels")], ["--labels=cnpg.io/jobRole=join"])
         self.assertEqual(by_name["check-network-none-join"][4], "gate-net-none")
+        pod = by_name["check-network-polaris-pod"]
+        self.assertEqual([a for a in pod if a.startswith("--labels")],
+                         ["--labels=app.kubernetes.io/name=polaris,"
+                          "app.kubernetes.io/instance=polaris"])
+        self.assertEqual(pod[4], "catalog-polaris")
+        self.assertFalse(any("lakehouse-gate/check" in a for a in pod))
         for name in ("check-network-polaris", "check-network-none"):
             self.assertFalse(any(a.startswith("--labels") for a in by_name[name]), name)
 
     def test_check_network_runs_every_probe_pod_at_once(self):
         # Each probe waits until all of them have started: run one after another, the first
         # one's wait breaks and its source has no results.
-        started = threading.Barrier(len(network.source_namespaces(ENV)), timeout=5)
+        started = threading.Barrier(
+            len(network.source_namespaces(ENV)) - len(network.LAST), timeout=5)
 
         def subprocess_run(argv, **kwargs):
             if "run" not in argv:
                 return subprocess.CompletedProcess(argv, 0, "", "")
+            if argv[argv.index("run") + 1].startswith("check-network-polaris-pod"):
+                return subprocess.CompletedProcess(argv, 0, "".join(
+                    f"{a} blocked\n" for a in argv[argv.index("python3") + 3:]), "")
             try:
                 started.wait()
             except threading.BrokenBarrierError:
@@ -317,6 +343,33 @@ class Probe(unittest.TestCase):
                 ENV, {"standin_images": {"recorder": {"image": PYTHON}}})
         self.assertEqual([p for p in problems if "no result" in p], [])
         self.assertEqual(len(lines) + len(problems), len(network.CASES))
+
+    def test_the_probe_with_polaris_labels_runs_after_every_other_probe_has_finished(self):
+        # Polaris's Services select pods by those labels: while this probe pod runs, it is a
+        # Ready endpoint that resets what is sent to it (smoke run 184: ingress -> polaris-api
+        # refused). Nothing else may be connecting then.
+        lock = threading.Lock()
+        finished, at_start = [], []
+
+        def subprocess_run(argv, **kwargs):
+            if "run" not in argv:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            name = argv[argv.index("run") + 1]
+            if name.startswith("check-network-polaris-pod"):
+                with lock:
+                    at_start.extend(finished)
+            else:
+                time.sleep(0.05)  # long enough that a concurrent polaris-pod would start first
+                with lock:
+                    finished.append(name)
+            out = "".join(f"{a} blocked\n" for a in argv[argv.index("python3") + 3:])
+            return subprocess.CompletedProcess(argv, 0, out, "")
+
+        with mock.patch.object(gate.subprocess, "run", side_effect=subprocess_run):
+            gate.check_network(ENV, {"standin_images": {"recorder": {"image": PYTHON}}})
+        others = len(network.source_namespaces(ENV)) - len(network.LAST)
+        self.assertEqual(len(at_start), others)
+        self.assertEqual(network.LAST, ("polaris-pod",))
 
     def test_the_script_reports_reached_and_refused_from_real_sockets(self):
         # A listening port and a closed one, on this machine.
@@ -368,6 +421,12 @@ class Outcome(unittest.TestCase):
         self.assertEqual(len(problems), 2)
         self.assertIn("does not enforce NetworkPolicy", problems[-1])
         self.assertIn("ADR-048", problems[-1])
+
+    def test_a_refused_fluent_bit_connection_that_reached_says_the_cni_does_not_enforce(self):
+        problems, _ = network.report([network.Case("polaris", "main-fluent-bit", False)],
+                                     {"polaris": {"main-fluent-bit": "reached"}})
+        self.assertIn("FAIL polaris -> main-fluent-bit: reached (refused)", problems[0])
+        self.assertIn("does not enforce NetworkPolicy", problems[-1])
 
     def test_every_case_is_named_with_its_result(self):
         problems, lines = network.report(

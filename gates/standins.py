@@ -21,10 +21,13 @@ never part of a release. Built here as one v1 List that `gate.py standins` appli
   namespace through a Role there that may only read pods. NS_STANDINS carries the label
   METRICS_NAMESPACE_LABEL names, so the stand-in crosses the release's own policies as the
   observability team's scraper would.
+- **The main Fluent Bit** (ADR-081): `main-fluent-bit-standin`, the pinned Fluent Bit image with
+  a forward input on 24224 and a null output, a Service by the same name. `.env` points the
+  Polaris log sidecar at it; only Polaris's pods (namespace and labels) may connect.
 
 Ingress to NS_STANDINS is denied by default; the recorder takes connections from Polaris's
 namespace, SeaweedFS, OPA and Prometheus from the gate's check pods, SeaweedFS and OPA also
-from the recorder (ADR-048 §3, ADR-046 §4).
+from the recorder (ADR-048 §3, ADR-046 §4), the main Fluent Bit from Polaris's pods.
 
 **Direct** (`manifests(..., direct=True)`, ADR-053 §4): for a stress install, which measures
 Polaris and not the recorder. SeaweedFS and OPA also take connections from Polaris's namespace,
@@ -46,6 +49,15 @@ RECORDER_READY_FILE = "/tmp/recorder-ready"
 FILER_PORT = 8888
 PG_PORT = 5432
 PROMETHEUS_PORT = 9090
+# The main Fluent Bit's forward input: a placeholder until the observability team names theirs
+# (ADR-081). gates/network.py holds its own copy; a test pins them equal.
+FLUENT_BIT_PORT = 24224
+FLUENT_BIT_NAME = "main-fluent-bit-standin"
+FLUENT_BIT_UID = 10001
+# What the stand-in's pod labels have to match to admit the sidecar: Polaris's pods, by the
+# labels charts/polaris-network-policies/templates/_helpers.tpl selects them with.
+POLARIS_POD_LABELS = {"app.kubernetes.io/name": "polaris",
+                      "app.kubernetes.io/instance": "polaris"}
 # The label every pod the gate starts to check things carries: in Polaris's namespace, those
 # pods may reach the stand-ins directly (ADR-034, ADR-048 §3).
 CHECK_LABEL = "lakehouse-gate/check"
@@ -89,10 +101,10 @@ def _deployment(name, namespace, container, volumes=()):
                                            "volumes": list(volumes)}}}}
 
 
-def _service(name, namespace, port):
+def _service(name, namespace, port, port_name="http"):
     return {"apiVersion": "v1", "kind": "Service", "metadata": _meta(name, namespace),
             "spec": {"selector": {"app.kubernetes.io/name": name},
-                     "ports": [{"name": "http", "port": port, "targetPort": port}]}}
+                     "ports": [{"name": port_name, "port": port, "targetPort": port}]}}
 
 
 def _named(namespace):
@@ -116,7 +128,8 @@ def network_policies(env, direct=False):
     default deny; the recorder from Polaris's namespace, and on its S3 port from Datahub's;
     SeaweedFS and OPA from the recorder and the gate's check pods, and with `direct` from
     Polaris's namespace too (ADR-053 §4), SeaweedFS also from Datahub's; Prometheus from the
-    gate's check pods."""
+    gate's check pods; the main Fluent Bit stand-in on its forward port from Polaris's pods
+    (the namespace AND their labels), the sidecar's one connection out (ADR-081)."""
     ns, polaris = env["NS_STANDINS"], env["NS_CATALOG_POLARIS"]
     datahub = env["NS_CATALOG_DATAHUB"]
     tcp = [{"protocol": "TCP", "port": p} for p in (OPA_PORT, S3_PORT, PG_PORT)]
@@ -135,6 +148,10 @@ def network_policies(env, direct=False):
             "ports": [{"protocol": "TCP", "port": port}], "from": sources}]))
     policies.append(_policy("prometheus", ns, _app("prometheus")["podSelector"], [{
         "ports": [{"protocol": "TCP", "port": PROMETHEUS_PORT}], "from": [checks]}]))
+    policies.append(_policy(FLUENT_BIT_NAME, ns, _app(FLUENT_BIT_NAME)["podSelector"], [{
+        "ports": [{"protocol": "TCP", "port": FLUENT_BIT_PORT}],
+        "from": [{**_named(polaris),
+                  "podSelector": {"matchLabels": dict(POLARIS_POD_LABELS)}}]}]))
     return policies
 
 
@@ -181,6 +198,40 @@ def prometheus_objects(env, image, config):
          "subjects": [{"kind": "ServiceAccount", "name": "prometheus", "namespace": ns}]},
         deployment,
         _service("prometheus", ns, PROMETHEUS_PORT),
+    ]
+
+
+def fluent_bit_config():
+    """The main Fluent Bit as a stand-in: a forward input, records dropped. The gate proves the
+    connection under the policy, not the records (gates/sidecar_smoke.py reads those)."""
+    return "\n".join([
+        "[SERVICE]", "    flush     1", "    log_level info", "",
+        "[INPUT]", "    Name   forward", "    Listen 0.0.0.0", f"    Port   {FLUENT_BIT_PORT}", "",
+        "[OUTPUT]", "    Name   null", "    Match  *", ""])
+
+
+def fluent_bit_objects(ns, image):
+    """The main Fluent Bit stand-in: its config, Deployment and Service, all named
+    `main-fluent-bit-standin` (the sidecar chart's default `output.host`)."""
+    fluent_bit = {
+        "image": image,
+        "args": ["-c", "/config/fluent-bit.conf"],
+        "ports": [{"name": "forward", "containerPort": FLUENT_BIT_PORT}],
+        "readinessProbe": {"tcpSocket": {"port": FLUENT_BIT_PORT}, "periodSeconds": 2},
+        "securityContext": {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
+                            "capabilities": {"drop": ["ALL"]}},
+        "volumeMounts": [{"name": "config", "mountPath": "/config", "readOnly": True}],
+    }
+    deployment = _deployment(FLUENT_BIT_NAME, ns, fluent_bit, [
+        {"name": "config", "configMap": {"name": f"{FLUENT_BIT_NAME}-config"}}])
+    deployment["spec"]["template"]["spec"]["securityContext"] = {
+        "runAsNonRoot": True, "runAsUser": FLUENT_BIT_UID, "fsGroup": FLUENT_BIT_UID}
+    return [
+        {"apiVersion": "v1", "kind": "ConfigMap",
+         "metadata": _meta(f"{FLUENT_BIT_NAME}-config", ns),
+         "data": {"fluent-bit.conf": fluent_bit_config()}},
+        deployment,
+        _service(FLUENT_BIT_NAME, ns, FLUENT_BIT_PORT, "forward"),
     ]
 
 
@@ -287,6 +338,7 @@ def manifests(env, pins, policy_text, recorder_code, tls, prometheus_config, dir
             {"name": "code", "configMap": {"name": "recorder-code"}},
             {"name": "tls", "secret": {"secretName": "recorder-tls"}}]),
         recorder_service,
+        *fluent_bit_objects(ns, images["fluent_bit_syslog"]["image"]),
         *prometheus_objects(env, images["prometheus"]["image"], prometheus_config),
         *network_policies(env, direct),
     ]}
