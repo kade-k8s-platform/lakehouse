@@ -219,7 +219,9 @@
   check-network   creates a namespace per caller class with the gate's label, one without any
                   label and Datahub's, then from a short-lived pod in each, from an
                   unlabelled pod in Polaris's namespace, and from a pod with CNPG's join label
-                  in Polaris's namespace and in the unlabelled one, all at once, connects to
+                  in Polaris's namespace and in the unlabelled one, and from a pod with
+                  Polaris's pod labels (the sidecar's path to the main Fluent Bit stand-in on
+                  24224, which only such pods may reach, ADR-081), all at once, connects to
                   each target of gates/network.py's CASES: each allowed one must connect, each
                   refused one must time out or be reset (ADR-048 §6). One that should be
                   refused and connects means the cluster does not enforce NetworkPolicy.

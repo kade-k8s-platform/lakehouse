@@ -15,6 +15,11 @@
   must time out or be reset. A refused case that connects means the cluster does not enforce
   NetworkPolicy: ADR-048 says to stop there. polaris-pg's own Services expose 5432 only, so
   the gate adds one, METRICS_SERVICE, for the instances' exporter on 9187.
+- **The sidecar's path (ADR-081):** the Polaris log sidecar's one connection out is TCP to the
+  main Fluent Bit's input. On the gate that is a stand-in Service in NS_STANDINS behind its
+  default-deny ingress; `polaris-pod`, a pod in Polaris's namespace with Polaris's pod labels,
+  must reach it and `polaris`, one without them, must not. No egress policy is involved
+  (ADR-079 §1), and the syslog hop is on the pod's loopback, which no policy sees.
 """
 
 import collections
@@ -39,8 +44,11 @@ TIMEOUT = 5
 INSTANCES = {"cnpg.io/podRole": "instance"}
 # The label CNPG puts on the Job pod that clones the primary to make a replica (ADR-048 §3).
 JOIN = {"cnpg.io/jobRole": "join"}
-# The sources whose probe pod carries labels: CNPG's join label, never the check label.
-POD_LABELS = {"polaris-join": JOIN, "none-join": JOIN, "datahub-join": JOIN,
+# The sources whose probe pod carries labels: CNPG's join label, Polaris's pod labels
+# (charts/polaris-network-policies' selector) or a client label, never the check label.
+POD_LABELS = {"polaris-join": JOIN,
+              "polaris-pod": {"app.kubernetes.io/name": "polaris",
+                              "app.kubernetes.io/instance": "polaris"}, "none-join": JOIN, "datahub-join": JOIN,
               "datahub-client": {release.DATAHUB_PG_CLIENT_LABEL: "true"},
               "datahub-kafka-client": {release.DATAHUB_KAFKA_CLIENT_LABEL: "true"},
               "datahub-opensearch-client": {release.DATAHUB_OPENSEARCH_CLIENT_LABEL: "true"},
@@ -48,6 +56,8 @@ POD_LABELS = {"polaris-join": JOIN, "none-join": JOIN, "datahub-join": JOIN,
 # The gate's Service for CNPG's exporter on polaris-pg's instances (ADR-046 §4).
 METRICS_SERVICE = "gate-polaris-pg-metrics"
 PG_METRICS_PORT = 9187
+# The main Fluent Bit's forward input (ADR-081); standins.py holds its own copy, a test pins them.
+FLUENT_BIT_PORT = 24224
 # datahub-kafka's client port (ADR-068 §1).
 KAFKA_PORT = 9092
 # datahub-opensearch's HTTP port, and its transport port, which no rule opens (ADR-070 §2).
@@ -67,7 +77,8 @@ Case = collections.namedtuple("Case", "source target allowed")
 # label), `polaris-join`, `none-join` and `datahub-join` (a pod with CNPG's join label in those
 # namespaces), `datahub-client` (a pod in NS_CATALOG_DATAHUB with datahub-pg's client label),
 # `datahub-kafka-client` (one there with Kafka's), `datahub-opensearch-client` (OpenSearch's)
-# or `datahub-gms-client` (GMS's).
+# or `datahub-gms-client` (GMS's); `polaris-pod` is a pod in NS_CATALOG_POLARIS with Polaris's
+# pod labels (ADR-081's row: the sidecar reaches the main Fluent Bit, an unlabelled pod does not).
 CASES = [
     Case("gateway", "polaris-api", True),
     Case("gateway", "polaris-management", False),
@@ -96,6 +107,8 @@ CASES = [
     Case("polaris", "recorder", True),
     Case("polaris", "seaweedfs", False),
     Case("polaris", "opa", False),
+    Case("polaris-pod", "main-fluent-bit", True),
+    Case("polaris", "main-fluent-bit", False),
     Case("polaris-join", "polaris-pg", True),
     Case("none-join", "polaris-pg", False),
     Case("datahub-client", "datahub-pg", True),
@@ -172,6 +185,7 @@ def targets(env):
         "recorder-pg": _svc("recorder", si, standins.PG_PORT),
         "seaweedfs": _svc("seaweedfs", si, standins.S3_PORT),
         "opa": _svc("opa", si, standins.OPA_PORT),
+        "main-fluent-bit": _svc(standins.FLUENT_BIT_NAME, si, FLUENT_BIT_PORT),
         "datahub-pg": _svc(f"{release.DATAHUB_PG}-rw", dh, standins.PG_PORT),
         # Headless: the name resolves to the broker's pod.
         "datahub-kafka": _svc(release.DATAHUB_KAFKA, dh, KAFKA_PORT),
@@ -196,6 +210,7 @@ def source_namespaces(env):
     sources["datahub"] = (env["NS_CATALOG_DATAHUB"], {})
     sources["polaris"] = (env["NS_CATALOG_POLARIS"], None)
     sources["polaris-join"] = (env["NS_CATALOG_POLARIS"], None)
+    sources["polaris-pod"] = (env["NS_CATALOG_POLARIS"], None)
     sources["none-join"] = (SOURCE_PREFIX + UNLABELLED, None)
     sources["datahub-client"] = (env["NS_CATALOG_DATAHUB"], None)
     sources["datahub-join"] = (env["NS_CATALOG_DATAHUB"], None)
