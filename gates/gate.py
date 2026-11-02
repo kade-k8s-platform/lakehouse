@@ -310,10 +310,6 @@ GATE_LOGS_SIZE = "1Gi"
 # kind's own default, which the class `standard` keeps.
 STANDARD_NODE_PATHS = [{"node": "DEFAULT_PATH_FOR_NON_LISTED_NODES",
                         "paths": ["/var/local-path-provisioner"]}]
-# What the last release's release.py reads from .env for the claim polaris-logs, which the
-# template no longer holds: the upgrade job runs that script over the gate's .env first.
-# L7g removes it with the shared class once no release that needs it is the upgrade's base.
-LEGACY_ENV = {"POLARIS_LOGS_STORAGE_CLASS": SHARED_CLASS, "POLARIS_LOGS_SIZE": GATE_LOGS_SIZE}
 # The Polaris console's image, built here from a pinned polaris-tools commit (ADR-028).
 CONSOLE_IMAGE_DIR = os.path.join(ROOT, "images", "polaris-console")
 CONSOLE_IMAGE_REPOSITORY = "lakehouse/polaris-console"
@@ -494,13 +490,12 @@ def console_settings(ns):
 
 def gate_env(template_text, gen=init_env.generate, direct=False):
     """`.env` for the gate: its context, the stand-ins' endpoints (`direct`: see
-    standin_endpoints), the S3 stand-in's credentials, the console's settings, the last
-    release's claim variables (LEGACY_ENV), the sidecar's destination (ADR-081) and a namespace label per caller class
-    (ADR-048 §6); init_env fills the rest."""
+    standin_endpoints), the S3 stand-in's credentials, the console's settings, the sidecar's
+    destination (ADR-081) and a namespace label per caller class (ADR-048 §6); init_env fills
+    the rest."""
     template = init_env.parse(template_text)
     fixed = {"KUBE_CONTEXT": CONTEXT, **standin_endpoints(template["NS_STANDINS"], direct),
              **console_settings(template["NS_CATALOG_POLARIS"]),
-             **LEGACY_ENV,
              "DATAHUB_INGEST_POLARIS_CATALOGS": INGEST_CATALOG,
              **network.GATE_CALLER_LABELS}
     lines = []
@@ -511,7 +506,6 @@ def gate_env(template_text, gen=init_env.generate, direct=False):
         elif name in GATE_ENV_GENERATED:
             line = f"{name}={gen(name)}"
         lines.append(line)
-    lines += [f"{name}={value}" for name, value in LEGACY_ENV.items() if name not in template]
     return "\n".join(lines) + "\n"
 
 
@@ -819,18 +813,15 @@ def command_label(command):
 # end, so their events are what is left of them; the Cluster's say what CNPG is doing.
 TIMELINE_EVENT_KINDS = ("Job", "Cluster")
 # And between polaris-pg's Ready and Polaris's revision: release.py's endpoint check and
-# bootstrap run in pods it names with these prefixes and deletes (--rm), then it makes the
-# log claim (install/release.py, the last release's too).
+# bootstrap run in pods it names with these prefixes and deletes (--rm).
 TIMELINE_POD_PREFIXES = ("endpoint-check-", "polaris-bootstrap-")
-TIMELINE_CLAIMS = ("polaris-logs",)
 
 
 def timeline_event(obj):
     """Whether an event about `obj` (its involvedObject) goes on the timeline."""
     kind, name = obj.get("kind"), obj.get("name") or ""
     return (kind in TIMELINE_EVENT_KINDS
-            or kind == "Pod" and name.startswith(TIMELINE_POD_PREFIXES)
-            or kind == "PersistentVolumeClaim" and name in TIMELINE_CLAIMS)
+            or kind == "Pod" and name.startswith(TIMELINE_POD_PREFIXES))
 
 
 def timeline_entries(since, histories, jobs, deployments, clusters, commands, events=None):
