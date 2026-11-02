@@ -189,24 +189,27 @@ SECRET_KEYS_TEMPLATE = ('go-template={{range .items}}{{.metadata.name}}:'
 SECRET_ONE_KEYS_TEMPLATE = 'go-template={{range $key, $value := .data}}{{$key}} {{end}}'
 # Run in the principal's pod with Python (ADR-076 §3): POLARIS_URL REALM PRINCIPAL; root's
 # client ID and secret on stdin, a line each; the principal's in CLIENT_ID and CLIENT_SECRET
-# from its Secret. Prints one line per call, `ok` or `FAIL` with the HTTP status and Polaris's
-# message, never a credential or a token.
+# from its Secret. Looks the principal up first and creates it only on a 404, so a rerun sends
+# no create that PostgreSQL would reject (23505). Prints one line per call, `ok` or `FAIL` with
+# the HTTP status and Polaris's message, never a credential or a token.
 PRINCIPAL_SCRIPT = r"""import json, os, sys, urllib.error, urllib.parse, urllib.request
 polaris, realm, name = sys.argv[1:4]
 root_id, root_secret = sys.stdin.readline().strip(), sys.stdin.readline().strip()
 
 
-def call(path, token=None, body=None, form=None):
+def call(path, token=None, body=None, form=None, method="POST"):
     headers = {"Polaris-Realm": realm}
     if token:
         headers["Authorization"] = "Bearer " + token
-    if form is not None:
+    if method == "GET":
+        data = None
+    elif form is not None:
         data = urllib.parse.urlencode(form).encode()
         headers["Content-Type"] = "application/x-www-form-urlencoded"
     else:
         data = json.dumps(body).encode()
         headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(polaris + path, data=data, headers=headers, method="POST")
+    request = urllib.request.Request(polaris + path, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             return response.status, response.read()
@@ -236,8 +239,12 @@ def token(client_id, client_secret, who):
 
 
 root = token(root_id, root_secret, "root")
-status, raw = call("/api/management/v1/principals", root, {"principal": {"name": name}})
-answer(status, raw, f"creating principal {name}", (201, 409))
+status, raw = call(f"/api/management/v1/principals/{name}", root, method="GET")
+answer(status, raw, f"looking up principal {name}", (200, 404))
+if status == 404:
+    status, raw = call("/api/management/v1/principals", root, {"principal": {"name": name}})
+    # 409: made between the lookup and the create (two installs at once); kept.
+    answer(status, raw, f"creating principal {name}", (201, 409))
 print(f"ok   principal {name} " + ("created" if status == 201 else "already there"), flush=True)
 status, raw = call(f"/api/management/v1/principals/{name}/reset", root, {
     "clientId": os.environ["CLIENT_ID"], "clientSecret": os.environ["CLIENT_SECRET"]})

@@ -1695,6 +1695,8 @@ class FakePolarisApi(http.server.BaseHTTPRequestHandler):
     existing = set()
     requests = []
     reset_status = 200
+    lookup_status = None
+    hide_from_lookup = False
 
     def log_message(self, *args):
         pass
@@ -1707,12 +1709,26 @@ class FakePolarisApi(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def do_GET(self):
+        cls = type(self)
+        cls.requests.append((self.path, self.headers.get("Polaris-Realm"),
+                             self.headers.get("Authorization"), "GET"))
+        prefix = "/api/management/v1/principals/"
+        if not self.path.startswith(prefix) or not self.headers.get("Authorization"):
+            return self.answer(404)
+        if cls.lookup_status is not None:
+            return self.answer(cls.lookup_status, {"error": {"message": "lookup refused"}})
+        name = self.path[len(prefix):]
+        if name in cls.existing and not cls.hide_from_lookup:
+            return self.answer(200, {"name": name})
+        return self.answer(404, {"error": {"message": "not found"}})
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length).decode()
         cls = type(self)
         cls.requests.append((self.path, self.headers.get("Polaris-Realm"),
-                             self.headers.get("Authorization")))
+                             self.headers.get("Authorization"), "POST"))
         if self.path == "/api/catalog/v1/oauth/tokens":
             form = urllib.parse.parse_qs(raw)
             cid, secret = form["client_id"][0], form["client_secret"][0]
@@ -1743,6 +1759,8 @@ class PrincipalScript(unittest.TestCase):
         FakePolarisApi.existing = set()
         FakePolarisApi.requests = []
         FakePolarisApi.reset_status = 200
+        FakePolarisApi.lookup_status = None
+        FakePolarisApi.hide_from_lookup = False
         self.server = http.server.HTTPServer(("127.0.0.1", 0), FakePolarisApi)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_port}"
@@ -1766,21 +1784,61 @@ class PrincipalScript(unittest.TestCase):
             "ok   principal datahub_ingest created",
             "ok   datahub_ingest's credentials reset to datahub-polaris-principal's",
             "ok   a token as datahub_ingest"])
-        self.assertEqual([r[0] for r in FakePolarisApi.requests], [
-            "/api/catalog/v1/oauth/tokens", "/api/management/v1/principals",
-            "/api/management/v1/principals/datahub_ingest/reset",
-            "/api/catalog/v1/oauth/tokens"])
+        self.assertEqual([(r[3], r[0]) for r in FakePolarisApi.requests], [
+            ("POST", "/api/catalog/v1/oauth/tokens"),
+            ("GET", "/api/management/v1/principals/datahub_ingest"),
+            ("POST", "/api/management/v1/principals"),
+            ("POST", "/api/management/v1/principals/datahub_ingest/reset"),
+            ("POST", "/api/catalog/v1/oauth/tokens")])
         self.assertTrue(all(r[1] == "POLARIS" for r in FakePolarisApi.requests))
         self.assertEqual(FakePolarisApi.requests[1][2], "Bearer token-rootid")
         for secret in ("rootsecret", "ingestsecret"):
             self.assertNotIn(secret, result.stdout + result.stderr)
 
-    def test_a_principal_already_there_is_kept_and_reset(self):
+    def test_a_principal_already_there_is_looked_up_and_not_created(self):
         FakePolarisApi.existing = {"datahub_ingest"}
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("ok   principal datahub_ingest already there", result.stdout)
-        self.assertIn("ok   a token as datahub_ingest", result.stdout)
+        self.assertEqual(result.stdout.splitlines(), [
+            "ok   a token as root",
+            "ok   principal datahub_ingest already there",
+            "ok   datahub_ingest's credentials reset to datahub-polaris-principal's",
+            "ok   a token as datahub_ingest"])
+        self.assertEqual([(r[3], r[0]) for r in FakePolarisApi.requests], [
+            ("POST", "/api/catalog/v1/oauth/tokens"),
+            ("GET", "/api/management/v1/principals/datahub_ingest"),
+            ("POST", "/api/management/v1/principals/datahub_ingest/reset"),
+            ("POST", "/api/catalog/v1/oauth/tokens")])
+        self.assertNotIn(("POST", "/api/management/v1/principals"),
+                         [(r[3], r[0]) for r in FakePolarisApi.requests])
+        for secret in ("rootsecret", "ingestsecret"):
+            self.assertNotIn(secret, result.stdout + result.stderr)
+
+    def test_a_principal_made_between_the_lookup_and_the_create_is_kept(self):
+        FakePolarisApi.existing = {"datahub_ingest"}
+        FakePolarisApi.hide_from_lookup = True
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [
+            "ok   a token as root",
+            "ok   principal datahub_ingest already there",
+            "ok   datahub_ingest's credentials reset to datahub-polaris-principal's",
+            "ok   a token as datahub_ingest"])
+
+    def test_a_failed_or_refused_lookup_stops_before_any_create(self):
+        for status in (500, 403):
+            with self.subTest(status=status):
+                FakePolarisApi.requests = []
+                FakePolarisApi.lookup_status = status
+                result = self.run_script()
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout.splitlines()[-1],
+                                 f"FAIL looking up principal datahub_ingest: HTTP {status}, "
+                                 "lookup refused")
+                self.assertNotIn(("POST", "/api/management/v1/principals"),
+                                 [(r[3], r[0]) for r in FakePolarisApi.requests])
+                for secret in ("rootsecret", "ingestsecret"):
+                    self.assertNotIn(secret, result.stdout + result.stderr)
 
     def test_a_wrong_root_credential_fails_first(self):
         result = self.run_script("rootid\nwrong\n")
