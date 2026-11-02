@@ -131,6 +131,7 @@ flowchart LR
 | [080](080-releases-are-candidates-at-a-main-commit-promoted-without-a-rebuild.md) | Releases are candidates at a `main` commit, promoted without a rebuild | Proposed |
 | [081](081-polaris-logs-are-filtered-in-a-sidecar-into-a-three-day-candidate-index-and-aggregated-by-an-opensearch-transform.md) | Polaris logs are filtered in a sidecar into a 3-day candidate index and aggregated by an OpenSearch transform | Amended by ADR-082 |
 | [082](082-the-polaris-log-sidecar-uses-built-in-fluent-bit-filters-only-and-derived-fields-are-left-to-opensearch.md) | The Polaris log sidecar uses built-in Fluent Bit filters only, and derived fields are left to OpenSearch | Accepted |
+| [083](083-the-log-batch-its-fixture-and-log-batch-gates-and-its-image-are-retired-and-the-install-order-loses-the-claim-and-the-batch.md) | The log batch, its fixture and log-batch gates and its image are retired, and the install order loses the claim and the batch | Proposed |
 
 ## Not ADRs
 
