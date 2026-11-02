@@ -464,17 +464,25 @@ class Document(unittest.TestCase):
         with open(os.path.join(CONTRACTS, "polaris-logs.md"), encoding="utf-8") as f:
             return f.read()
 
-    def test_v3_comes_before_the_superseded_v2(self):
-        text = self.md().lower()
-        self.assertGreaterEqual(text.find("contract v3"), 0)
-        self.assertLess(text.find("contract v3"), text.find("contract v2 (superseded"))
+    def test_v2_is_gone(self):
+        text = self.md()
+        self.assertNotRegex(text, r"(?m)^# Contract v2")
+        for words in ("Create Fixtures", "polaris-logs-processed", "contract v2 (superseded"):
+            self.assertNotIn(words, text)
+        self.assertEqual(glob.glob(os.path.join(CONTRACTS, "polaris-logs-*.schema.json")), [])
+        self.assertFalse(hasattr(contract, "load"))
 
-    def test_v2_schemas_are_untouched(self):
-        for name in ("processed", "summary", "resource", "principal", "app-dropped"):
-            self.assertTrue(os.path.exists(
-                os.path.join(CONTRACTS, f"polaris-logs-{name}.schema.json")), name)
-        self.assertEqual(contract.load("processed")["title"],
-                         "Polaris log contract v2: one processed line")
+    def test_the_exception_shape_is_in_v3(self):
+        text = self.v3_text()
+        for word in ("exceptionType", "frames", "causedBy", "suppressed", "refId"):
+            self.assertIn(word, text)
+        self.assertNotIn("in the shape contract v2", text)
+
+    def test_versions_is_the_last_section_and_lists_v1_v2_v3(self):
+        after = self.md().split("## Versions", 1)[1]
+        for v in ("**v1**", "**v2**", "**v3**"):
+            self.assertIn(v, after)
+        self.assertNotIn("## ", after)
 
     def test_files_and_the_document_name_each_other(self):
         named = set(re.findall(r"polaris-logs-v3-[a-z-]+(?:\.schema)?\.json", self.md()))
@@ -488,7 +496,7 @@ class Document(unittest.TestCase):
         self.assertIn("ADR-082", self.md().split("## Versions")[-1])
 
     def v3_text(self):
-        return self.md().split("# Contract v2 (superseded", 1)[0]
+        return self.md().split("## Versions", 1)[0]
 
     def test_v3_says_what_was_measured(self):
         text = self.v3_text()

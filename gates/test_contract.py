@@ -161,6 +161,11 @@ class Rows(unittest.TestCase):
 
 
 class Validator(unittest.TestCase):
+    def test_the_v2_loaders_are_gone(self):
+        for name in ("load", "row_problems", "ROW_SCHEMAS", "check_lines"):
+            self.assertFalse(hasattr(contract, name), name)
+        self.assertTrue(hasattr(contract, "problems"))
+
     def test_nested_objects_arrays_and_nullable_fields(self):
         schema = {"type": "object", "required": ["a"], "additionalProperties": False,
                   "properties": {"a": {"type": "array",

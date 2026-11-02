@@ -573,28 +573,32 @@ class Driver(unittest.TestCase):
 
 
 class Wiring(unittest.TestCase):
-    def main(self, own, probed):
+    def main(self, probed, smoked):
         sys.path.insert(0, HERE)
         import gate
-        with mock.patch.object(gate, "check_logs", return_value=own), \
-                mock.patch.object(gate.syslog_probe, "run", return_value=probed) as syslog, \
-                mock.patch.object(gate.sidecar_smoke, "run", return_value=([], [])), \
+        with mock.patch.object(gate.syslog_probe, "run", return_value=probed) as syslog, \
+                mock.patch.object(gate.sidecar_smoke, "run", return_value=smoked) as smoke, \
                 mock.patch.object(gate.release, "load_env", return_value=ENV), \
                 mock.patch("builtins.print") as printed:
             code = gate.main(["gate.py", "check-logs"])
-        return code, syslog, [c.args[0] for c in printed.call_args_list]
+        return code, syslog, smoke, [c.args[0] for c in printed.call_args_list]
 
-    def test_both_run_and_both_are_printed(self):
-        code, syslog, lines = self.main(([], ["note a"]), ([], ["note b"]))
+    def test_both_steps_run_in_order_and_their_notes_are_printed(self):
+        code, syslog, smoke, lines = self.main(([], ["note a"]), ([], ["note b"]))
         self.assertEqual(code, 0)
         syslog.assert_called_once()
+        smoke.assert_called_once()
         self.assertEqual(lines, ["note a", "note b"])
 
-    def test_a_problem_in_either_exits_1(self):
-        self.assertEqual(self.main((["p"], []), ([], []))[0], 1)
-        code, _, lines = self.main(([], []), (["q"], ["n"]))
-        self.assertEqual(code, 1)
-        self.assertEqual(lines, ["n", "q"])
+    def test_a_problem_in_either_step_exits_1_after_the_notes(self):
+        code, syslog, smoke, lines = self.main((["p"], ["n"]), ([], []))
+        self.assertEqual((code, lines), (1, ["n", "p"]))
+        syslog.assert_called_once()
+        smoke.assert_called_once()
+        code, syslog, smoke, lines = self.main(([], []), (["q"], []))
+        self.assertEqual((code, lines), (1, ["q"]))
+        syslog.assert_called_once()
+        smoke.assert_called_once()
 
 
 if __name__ == "__main__":
