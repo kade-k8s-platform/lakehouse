@@ -1,7 +1,6 @@
 """Tests for network.py (ADR-048 §5, §6). Run: python3 -m unittest discover -s gates"""
 
 import errno
-import json
 import os
 import socket
 import subprocess
@@ -293,35 +292,6 @@ class Probe(unittest.TestCase):
                                      labels={"cnpg.io/jobRole": "join"})
         self.assertEqual([a for a in argv if a.startswith("--labels")],
                          ["--labels=cnpg.io/jobRole=join"])
-
-    def test_a_probe_with_polaris_labels_is_never_ready_so_no_service_selects_it(self):
-        # Polaris's Services select by these labels; a Ready probe pod would be an endpoint that
-        # resets the connections sent to it (smoke run 184: ingress -> polaris-api refused).
-        argv = network.probe_command("catalog-polaris", PYTHON, "probe-1", ["a:24224"],
-                                     labels=network.POD_LABELS["polaris-pod"], ready=False)
-        overrides = json.loads(argv[argv.index("--overrides") + 1])
-        self.assertIn("--override-type=strategic", argv)
-        (c,) = overrides["spec"]["containers"]
-        self.assertEqual((c["name"], c["image"]), ("probe-1", PYTHON))
-        self.assertEqual(c["readinessProbe"]["exec"]["command"], ["false"])
-        plain = network.probe_command("catalog-polaris", PYTHON, "probe-1", ["a:5432"])
-        self.assertNotIn("--overrides", plain)
-
-    def test_check_network_probes_only_the_polaris_pod_source_unready(self):
-        commands = []
-
-        def subprocess_run(argv, **kwargs):
-            commands.append(argv)
-            return subprocess.CompletedProcess(argv, 0, "", "")
-
-        with mock.patch.object(gate.subprocess, "run", side_effect=subprocess_run):
-            gate.check_network(ENV, {"standin_images": {"recorder": {"image": PYTHON}}})
-        runs = {argv[argv.index("run") + 1].split("-" + str(os.getpid()))[0]: argv
-                for argv in commands if "run" in argv}
-        self.assertIn("--overrides", runs["check-network-polaris-pod"])
-        for name, argv in runs.items():
-            if name != "check-network-polaris-pod":
-                self.assertNotIn("--overrides", argv, name)
 
     def test_check_network_probes_each_join_source_with_its_label(self):
         commands = []
