@@ -85,10 +85,7 @@ installed (ADR-081, ADR-082). Installing this release over a cluster that ran an
   `.env` (its release.py stops without them) and the claim (it applies it again when absent;
   deleting the claim first loses the old log files).
 
-`batch-image` prints the batch's image on the GitHub Container Registry, whatever `.env` says:
-the image the release workflow pushes (ADR-042).
-
-Usage: python3 install/release.py [--dry-run] | batch-image
+Usage: python3 install/release.py [--dry-run]
        Exits 0 when every step passed, 1 with the problems, 2 on an unknown option.
 """
 
@@ -268,15 +265,6 @@ BOOTSTRAP_WRAPPER = f'cat >/dev/null; exec {ADMIN_TOOL_ENTRYPOINT} "$@" 1>&2'
 # (polaris-core AuthBootstrapUtil.java); the schema script it ran first changes nothing.
 ALREADY_BOOTSTRAPPED = "It appears this metastore manager has already been bootstrapped"
 BOOTSTRAP_TAIL = 20
-# The log batch (ADR-014, ADR-036): its chart, and its image built from this repository,
-# tagged by a hash of the files that go into it.
-BATCH = "polaris-log-batch"
-BATCH_CHART = os.path.join(ROOT, "charts", BATCH)
-BATCH_IMAGE_DIR = os.path.join(ROOT, "images", BATCH)
-BATCH_IMAGE_FILES = ("Dockerfile", "polaris_log_batch.py")
-# Where the release workflow pushes this repository's images, and where a cluster pulls them
-# from while `IMAGE_REGISTRY` is empty (ADR-042, ADR-074).
-DEFAULT_IMAGE_REGISTRY = "ghcr.io/kade-k8s-platform/lakehouse"
 POLARIS_CHART = os.path.join(ROOT, "charts", "polaris")
 # The log sidecar (ADR-081, ADR-082): its chart, and the values fragment that adds it to Polaris.
 SIDECAR = "polaris-log-sidecar"
@@ -852,23 +840,6 @@ def console_values(env):
                                "polarisRealm": POLARIS_REALM}}}
 
 
-def image_registry(env):
-    """The registry and path the cluster pulls this repository's images from (ADR-042):
-    `IMAGE_REGISTRY`, or the GitHub Container Registry while it is empty."""
-    return env.get("IMAGE_REGISTRY", "").rstrip("/") or DEFAULT_IMAGE_REGISTRY
-
-
-def batch_image(directory=BATCH_IMAGE_DIR, registry=DEFAULT_IMAGE_REGISTRY):
-    """The batch's image: the registry, its name, and the first 12 hex digits of a SHA-256
-    over the names and contents of the files that go into it."""
-    digest = hashlib.sha256()
-    for name in BATCH_IMAGE_FILES:
-        with open(os.path.join(directory, name), "rb") as f:
-            data = f.read()
-        digest.update(f"{name}\0{len(data)}\0".encode() + data)
-    return f"{registry}/{BATCH}:{digest.hexdigest()[:12]}"
-
-
 def ingestion_image(path=DATAHUB_VALUES):
     """The ingestion CronJob's image, by the tag and digest in charts/datahub's values."""
     with open(path, encoding="utf-8") as f:
@@ -1120,9 +1091,6 @@ def install(env, run, supported, dry_run):
 
 
 def main(argv):
-    if argv[1:] == ["batch-image"]:
-        print(batch_image())
-        return 0
     if argv[1:] not in ([], ["--dry-run"]):
         print(__doc__.strip().splitlines()[-2].strip(), file=sys.stderr)
         return 2
