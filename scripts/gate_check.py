@@ -4,7 +4,8 @@ its files need cover its head.
 1. Fails if the head branch starts with `gate/`.
 2. Picks the gates the PR needs: dry-run on `gate/dry-run/<task>` and smoke on
    `gate/smoke/<task>` when it changes a platform file (PLATFORM below). Passes if it needs
-   none. The log-batch gate lapsed with the batch's removal (ADR-081).
+   none. The log-batch gate is no longer asked for: ADR-081
+   replaces the batch, and removes its old path in L7.
 3. For each gate it needs, takes the latest successful run of its workflow on its branch and
    that run's commit X.
 4. Passes only if, for every gate it needs, X is an ancestor of the head and every file changed
