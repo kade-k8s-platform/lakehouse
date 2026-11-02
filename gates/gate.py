@@ -459,6 +459,10 @@ def standin_endpoints(ns, direct=False):
         "DATAHUB_BACKUP_BUCKET": STANDIN_DATAHUB_BACKUP_BUCKET,
         "POLARIS_OPA_URL": f"http://{opa}:{standins.OPA_PORT}{standins.OPA_PACKAGE_PATH}",
         "POLARIS_DB_HOST": release.POLARIS_PG_SERVICE if direct else recorder,
+        # The sidecar's forward output (ADR-081): the FQDN, since Polaris's pods are in another
+        # namespace. A stress install keeps it.
+        "POLARIS_LOG_OUTPUT_HOST": f"{standins.FLUENT_BIT_NAME}.{ns}.svc.cluster.local",
+        "POLARIS_LOG_OUTPUT_PORT": str(standins.FLUENT_BIT_PORT),
     }
 
 
@@ -521,7 +525,8 @@ def console_settings(ns):
 def gate_env(template_text, gen=init_env.generate, direct=False):
     """`.env` for the gate: its context, the stand-ins' endpoints (`direct`: see
     standin_endpoints), the S3 stand-in's credentials, the console's settings, the log claim's
-    shared class and a namespace label per caller class (ADR-048 §6); init_env fills the rest."""
+    shared class, the sidecar's destination (ADR-081) and a namespace label per caller class
+    (ADR-048 §6); init_env fills the rest."""
     template = init_env.parse(template_text)
     fixed = {"KUBE_CONTEXT": CONTEXT, **standin_endpoints(template["NS_STANDINS"], direct),
              **console_settings(template["NS_CATALOG_POLARIS"]),
@@ -546,7 +551,7 @@ def write_gate_env(path, template_text, direct=False):
 
 
 def standins_commands(env, manifest):
-    """(argv, stdin) in order: apply the stand-ins' List `manifest`, wait until all four are
+    """(argv, stdin) in order: apply the stand-ins' List `manifest`, wait until all five are
     ready, then create each backup bucket, Polaris's then Datahub's, with SeaweedFS's shell
     (`weed mini -bucket` makes only the warehouse's) and check that its filer lists it (ADR-043,
     ADR-066 §3)."""
@@ -555,7 +560,8 @@ def standins_commands(env, manifest):
         (["kubectl", "--context", CONTEXT, "apply", "--server-side", "--field-manager=gate",
           "-f", "-"], manifest),
         (ns + ["rollout", "status", "deployment/seaweedfs", "deployment/opa",
-               "deployment/recorder", "deployment/prometheus", "--timeout=5m"], None),
+               "deployment/recorder", "deployment/prometheus",
+               f"deployment/{standins.FLUENT_BIT_NAME}", "--timeout=5m"], None),
     ]
     for bucket in (env["POLARIS_BACKUP_BUCKET"], env["DATAHUB_BACKUP_BUCKET"]):
         commands += [
