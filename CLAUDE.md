@@ -23,7 +23,7 @@ storage, observability, SSO and the catalog gateway are other teams' services, r
 |---|---|
 | `docs/adr/` | Decisions and their index |
 | `docs/plans/roadmap.md` | The plan to the first release: scope, phases P0 to P7, open items |
-| `docs/measurements/`, `docs/runbooks/` | Measurements, with evidence and the versions measured, once the first is taken (ADR-003); runbooks, one per procedure, used on a target cluster only once proven on a Linux test cluster (ADR-043, ADR-052) |
+| `docs/contracts/`, `docs/measurements/`, `docs/runbooks/` | Contracts with other teams' services, `polaris-logs.md` being contract v3 (the sidecar's routing, the candidate and error indices, the aggregate; ADR-081, ADR-082); measurements, with evidence and the versions measured, once the first is taken (ADR-003); runbooks, one per procedure, used on a target cluster only once proven on a Linux test cluster (ADR-043, ADR-052) |
 | `scripts/adr_check.py` | ADR-000 checks: names, numbers, headers, index rows, citations |
 | `scripts/repo_check.py` | No env file, key file, secret pattern or CRLF in what git tracks (ADR-002, ADR-006) |
 | `scripts/claude_md_check.py` | This file at most 100 lines; `.claude/rules/*.md` at most 80 with `paths:` |
