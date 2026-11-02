@@ -4,8 +4,7 @@
 # commit, the tag is the highest rc of a version that is not released yet and is above the latest
 # release, and its prerelease exists (install/release_tag.py rc-branch, check-promote). It then
 # tags the same commit platform-YYYY.MM.DD and makes the GitHub release, marked latest, with the
-# prerelease's notes, which name the log batch's image and its digest: nothing is built or
-# tested again, and no job here can write packages. Last, it deletes the rc branches of that
+# prerelease's notes: nothing is built or tested again, and no job here can write packages. Last, it deletes the rc branches of that
 # version and every older one; a failed run keeps them. Only the tag job can write, and it runs
 # none of the repository's code.
 name: Promote
