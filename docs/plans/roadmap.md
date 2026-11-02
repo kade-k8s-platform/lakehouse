@@ -14,7 +14,7 @@ the second column belong to other teams. Here they are only interfaces, configur
 |---|---|
 | **Apache Polaris** (ADR-009), with its own PostgreSQL on CloudNativePG (ADR-008, ADR-010) | **Object storage**, S3-compatible: the Iceberg warehouse and backups |
 | **Polaris console** (`apache/polaris-tools` `console/`) | **Observability**: Fluent Bit, OpenSearch, Prometheus, Grafana |
-| **The Polaris log batch** (ADR-014): processed log files ready for Fluent Bit | **ETL**: Spark, Flink, the shared Kafka |
+| **The Polaris log batch** (ADR-014) and **log sidecar** (ADR-081, ADR-082): processed log files ready for Fluent Bit, and the kept lines forwarded to it | **ETL**: Spark, Flink, the shared Kafka |
 | **Datahub**, with PostgreSQL on CNPG, a single-broker Kafka and a small OpenSearch, used by Datahub only (ADR-025) | **Query clients**: Trino, Iceberg clients, per-user StarRocks |
 | | **SSO**: Keycloak |
 | | **The catalog gateway**: Polaris's authorizer and wrapper API, built elsewhere |
@@ -36,6 +36,8 @@ flowchart LR
     POL -->|"warehouse"| S3[("object storage")]
     POL -.->|"original logs"| LB["log batch"]
     LB -.->|"processed files"| FB["Fluent Bit"] --> OS[("OpenSearch")]
+    POL -.->|"syslog"| SC["log sidecar<br/>(filters)"]
+    SC -.->|"kept lines"| FB
     DH["Datahub"] -->|"ingests metadata"| POL
     DH --> DPG[("PostgreSQL<br/>CNPG")]
     DH --> DK[("Kafka")]
@@ -70,7 +72,7 @@ source does not matter for operation. What follows is the list they cover.
     stand-in (ADR-031).
   - The install order without storage and monitoring (restated in full by ADR-045).
   - Fluent Bit and OpenSearch belong to the observability team; this repository delivers the
-    log files ADR-014 describes, in a documented format (ADR-024, ADR-081).
+    log files ADR-014 describes, in a documented format (ADR-081).
   - ADR-014: its open question (sharing the log volume across nodes) is answered before the
     batch is built.
   - ADR-017: the gate installs stand-ins (SeaweedFS, Fluent Bit) that are never released
@@ -211,7 +213,20 @@ source does not matter for operation. What follows is the list they cover.
   count them, both pods' files are read, and the second run changes nothing.
   The release flow pushes the batch's image to GHCR under its content-hash tag, and a
   cluster pulls it from `IMAGE_REGISTRY` or GHCR (ADR-080, #55); `platform-2026.10.12`,
-  the first release with Polaris, pushed it (#78).
+  the first release with Polaris, pushed it (#78). ADR-081 replaces this path with the log
+  sidecar below; the batch, its claim and check-logs stay until the cutover removes them.
+- The log sidecar (2026-10-30 to 2026-10-31, ADR-081, ADR-082). Polaris sends its logs over
+  syslog on localhost to a Fluent Bit native sidecar (no file, no claim) that keeps refusals,
+  errors and changes by twelve routing rows of built-in filters and forwards them to the
+  observability team's main Fluent Bit, into a three-day candidate index that an OpenSearch
+  transform aggregates (contract v3, docs/contracts/polaris-logs.md; #241, #247).
+  charts/polaris-log-sidecar is the ConfigMap and the values that add the sidecar to Polaris
+  (#242, #246); release.py installs it in step 1 after the claim and before Polaris, and a
+  failure stops the install (#248). On the gate, check-logs also runs Polaris 1.6.0's syslog
+  proofs (#243) and the sidecar smoke step, syslog frames through the rendered filters and
+  Polaris's handler reconnecting after a sidecar restart (#246). The sidecar's output host and
+  port are POLARIS_LOG_OUTPUT_HOST and POLARIS_LOG_OUTPUT_PORT, empty placeholders until the
+  observability team gives them. Both paths run side by side until the old one is removed.
 - Backups (2026-10-12, ADR-043, #83). polaris-pg archives its WAL and takes a daily base
   backup through the Barman Cloud Plugin into `POLARIS_BACKUP_BUCKET`, with its own key in
   `polaris-backup-s3`; step 0 requires the plugin and its `ObjectStore` CRD. The gate
@@ -327,7 +342,8 @@ Started on 2026-10-18 (Kade).
 
 - Metrics endpoints and the scrape configuration the other team's Prometheus needs:
   Polaris's done in P2 (ADR-046); Datahub's join the contract with its chart.
-- Log files and their format as P0 documents them. No dashboards of our own.
+- The log sidecar's records and routing as contract v3 documents them (ADR-081, ADR-082). No
+  dashboards of our own.
 
 ### P6: measurements
 
