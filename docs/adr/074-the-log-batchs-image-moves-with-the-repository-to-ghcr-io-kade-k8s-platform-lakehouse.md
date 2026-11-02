@@ -1,6 +1,6 @@
 # ADR-074: The log batch's image moves with the repository, to `ghcr.io/kade-k8s-platform/lakehouse`
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-083
 - **Date:** 2026-10-18
 - **Related:** ADR-033, ADR-042, ADR-051, ADR-073
 
