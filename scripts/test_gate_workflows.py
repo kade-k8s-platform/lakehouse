@@ -492,6 +492,24 @@ class Stress(unittest.TestCase):
         self.assertEqual(upload["with"]["name"], "stress")
 
 
+class PlainScalars(unittest.TestCase):
+    """The reader above is lenient; GitHub's YAML is not. An unquoted `name:` value with `: `
+    or ` #` in it makes GitHub reject the whole workflow (a run with no jobs)."""
+
+    def test_no_unquoted_step_or_job_name_holds_a_colon_space_or_a_comment_mark(self):
+        for name in sorted(os.listdir(WORKFLOWS)):
+            if not name.endswith(".yml"):
+                continue
+            with open(os.path.join(WORKFLOWS, name), encoding="utf-8") as f:
+                for number, line in enumerate(f, 1):
+                    m = re.match(r"^\s*(?:- )?name:\s+(\S.*)$", line.rstrip("\n"))
+                    if not m or m.group(1)[0] in "\"'|>[{&*!":
+                        continue
+                    with self.subTest(file=name, line=number):
+                        self.assertNotIn(": ", m.group(1))
+                        self.assertNotIn(" #", m.group(1))
+
+
 class BatchImageStepIsGone(unittest.TestCase):
     """The batch's image step and diagnostics are gone from smoke and stress (ADR-083)."""
 

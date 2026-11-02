@@ -185,7 +185,7 @@ jobs:
           set -euo pipefail
           python3 gates/gate.py check-restore | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: The log sidecar chain: Polaris's syslog proofs, then the sidecar into the Fluent Bit stand-in (ADR-081, ADR-082)
+      - name: The log sidecar chain, Polaris's syslog proofs then the sidecar into the Fluent Bit stand-in (ADR-081, ADR-082)
         run: |
           set -euo pipefail
           python3 gates/gate.py check-logs | tee -a "$GITHUB_STEP_SUMMARY"
