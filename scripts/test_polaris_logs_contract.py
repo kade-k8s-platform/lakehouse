@@ -469,7 +469,9 @@ class Document(unittest.TestCase):
         self.assertNotRegex(text, r"(?m)^# Contract v2")
         for words in ("Create Fixtures", "polaris-logs-processed", "contract v2 (superseded"):
             self.assertNotIn(words, text)
-        self.assertEqual(glob.glob(os.path.join(CONTRACTS, "polaris-logs-*.schema.json")), [])
+        v2 = [p for p in glob.glob(os.path.join(CONTRACTS, "polaris-logs-*.schema.json"))
+              if not os.path.basename(p).startswith("polaris-logs-v3-")]
+        self.assertEqual(v2, [])
         self.assertFalse(hasattr(contract, "load"))
 
     def test_the_exception_shape_is_in_v3(self):
