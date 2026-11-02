@@ -103,12 +103,22 @@ class Cases(unittest.TestCase):
         self.assertIs(expected[("query", "console")], False)
         self.assertIs(expected[("gateway", "polaris-pg-metrics")], False)
 
+    def test_the_sidecars_path_is_allowed_from_polaris_pods_and_refused_from_other_pods(self):
+        # ADR-081: one allowed and one refused connection to the main Fluent Bit's input.
+        expected = {(c.source, c.target): c.allowed for c in network.CASES}
+        self.assertIs(expected[("polaris-pod", "main-fluent-bit")], True)
+        self.assertIs(expected[("polaris", "main-fluent-bit")], False)
+        self.assertEqual({c.target: c.allowed for c in network.CASES
+                          if c.source == "polaris-pod"}, {"main-fluent-bit": True})
+        found = [c.allowed for c in network.CASES if c.target == "main-fluent-bit"]
+        self.assertEqual(sorted(found), [False, True])
+
     def test_an_unlabelled_pod_in_polaris_namespace_reaches_only_the_recorder(self):
         expected = {c.target: c.allowed for c in network.CASES if c.source == "polaris"}
         self.assertEqual(expected, {"polaris-api": False, "polaris-pg": False,
                                     "seaweedfs": False, "opa": False, "recorder": True,
                                     "datahub-pg": False, "datahub-kafka": False,
-                                    "datahub-gms": False})
+                                    "datahub-gms": False, "main-fluent-bit": False})
 
     def test_datahub_pg_from_its_clients_and_join_pods_in_datahubs_namespace_only(self):
         # ADR-066 §4: datahub-pg's rules as polaris-pg's, for Datahub's own label.
@@ -188,6 +198,8 @@ class Cases(unittest.TestCase):
         self.assertEqual(addresses["recorder-pg"], "recorder.standins.svc.cluster.local:5432")
         self.assertEqual(addresses["seaweedfs"], "seaweedfs.standins.svc.cluster.local:8333")
         self.assertEqual(addresses["opa"], "opa.standins.svc.cluster.local:8181")
+        self.assertEqual(addresses["main-fluent-bit"],
+                         "main-fluent-bit-standin.standins.svc.cluster.local:24224")
         self.assertEqual(addresses["datahub-pg"],
                          "datahub-pg-rw.catalog-datahub.svc.cluster.local:5432")
         self.assertEqual(addresses["datahub-kafka"],
@@ -216,6 +228,7 @@ class Sources(unittest.TestCase):
             "datahub": ("catalog-datahub", {}),
             "polaris": ("catalog-polaris", None),
             "polaris-join": ("catalog-polaris", None),
+            "polaris-pod": ("catalog-polaris", None),
             "none-join": ("gate-net-none", None),
             "datahub-client": ("catalog-datahub", None),
             "datahub-join": ("catalog-datahub", None),
@@ -226,6 +239,8 @@ class Sources(unittest.TestCase):
     def test_the_join_sources_carry_cnpgs_join_label_and_datahubs_client_its_own(self):
         self.assertEqual(network.POD_LABELS, {
             "polaris-join": {"cnpg.io/jobRole": "join"},
+            "polaris-pod": {"app.kubernetes.io/name": "polaris",
+                            "app.kubernetes.io/instance": "polaris"},
             "none-join": {"cnpg.io/jobRole": "join"},
             "datahub-join": {"cnpg.io/jobRole": "join"},
             "datahub-client": {"lakehouse/datahub-pg-client": "true"},
@@ -294,6 +309,12 @@ class Probe(unittest.TestCase):
         self.assertEqual([a for a in by_name["check-network-none-join"]
                           if a.startswith("--labels")], ["--labels=cnpg.io/jobRole=join"])
         self.assertEqual(by_name["check-network-none-join"][4], "gate-net-none")
+        pod = by_name["check-network-polaris-pod"]
+        self.assertEqual([a for a in pod if a.startswith("--labels")],
+                         ["--labels=app.kubernetes.io/name=polaris,"
+                          "app.kubernetes.io/instance=polaris"])
+        self.assertEqual(pod[4], "catalog-polaris")
+        self.assertFalse(any("lakehouse-gate/check" in a for a in pod))
         for name in ("check-network-polaris", "check-network-none"):
             self.assertFalse(any(a.startswith("--labels") for a in by_name[name]), name)
 
@@ -368,6 +389,12 @@ class Outcome(unittest.TestCase):
         self.assertEqual(len(problems), 2)
         self.assertIn("does not enforce NetworkPolicy", problems[-1])
         self.assertIn("ADR-048", problems[-1])
+
+    def test_a_refused_fluent_bit_connection_that_reached_says_the_cni_does_not_enforce(self):
+        problems, _ = network.report([network.Case("polaris", "main-fluent-bit", False)],
+                                     {"polaris": {"main-fluent-bit": "reached"}})
+        self.assertIn("FAIL polaris -> main-fluent-bit: reached (refused)", problems[0])
+        self.assertIn("does not enforce NetworkPolicy", problems[-1])
 
     def test_every_case_is_named_with_its_result(self):
         problems, lines = network.report(
