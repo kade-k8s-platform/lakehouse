@@ -205,8 +205,7 @@ class Builders(unittest.TestCase):
         return {"metadata": {"name": "polaris", "namespace": "polaris-ns"},
                 "spec": {"template": {"metadata": {"labels": {}}, "spec": {
                     "containers": [{"name": "polaris", "image": "p", "env": []}],
-                    "volumes": [{"name": "polaris-logs",
-                                 "persistentVolumeClaim": {"claimName": "x"}}]}}}}
+                    "volumes": [{"name": "own", "emptyDir": {}}]}}}}
 
     def test_the_restart_deployment(self):
         fragment = self.fragment()
@@ -222,8 +221,9 @@ class Builders(unittest.TestCase):
         self.assertEqual(side["volumeMounts"], before["container"]["volumeMounts"])
         self.assertEqual(fragment, before)
         volumes = [v["name"] for v in spec["volumes"]]
-        self.assertNotIn("polaris-logs", volumes)
-        self.assertIn("log-sidecar-config", volumes)
+        self.assertEqual(volumes[0], "own")
+        self.assertEqual(volumes[-1], "log-sidecar-config")
+        self.assertEqual([v for v in spec["volumes"] if "persistentVolumeClaim" in v], [])
         config = [v for v in spec["volumes"] if v["name"] == "log-sidecar-config"][0]
         self.assertEqual(config["configMap"]["name"], smoke.CONFIG_NAME)
         env = {e["name"]: e["value"] for e in spec["containers"][0]["env"]}

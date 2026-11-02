@@ -2,7 +2,7 @@
 
 `check-logs` chains `run()` after its own checks. Each of two legs clones the release's Polaris
 Deployment into a one-replica probe Deployment of its own (the syslog handler set by
-`QUARKUS_LOG_SYSLOG_*` environment variables, the log claim and the file appender off), with a
+`QUARKUS_LOG_SYSLOG_*` environment variables and the file appender off), with a
 native sidecar listening on 127.0.0.1:5140 as the real sidecar will:
 
   leg A  gates/syslog_receiver.py, a plain receiver, max-length 2048: the handler starts with the
@@ -155,7 +155,7 @@ def fluent_bit_configmap(namespace):
 def probe_deployment(source, name, max_length, sidecar, volumes):
     """A one-replica Deployment cloned from the release's Polaris `source`, as `name`: Helm's
     metadata and Polaris's labels gone (so the Service, the budget and the gate's own pod
-    queries never see it), the log claim and the anti-affinity gone, the syslog handler on
+    queries never see it), the anti-affinity gone, the syslog handler on
     through the environment, `sidecar` first among the init containers. `source` is not
     changed."""
     pod = copy.deepcopy(source["spec"]["template"]["spec"])
@@ -164,14 +164,11 @@ def probe_deployment(source, name, max_length, sidecar, volumes):
     kept = {k: v for k, v in template.get("labels", {}).items() if k.startswith("lakehouse/")}
     pod.pop("affinity", None)
     pod.pop("topologySpreadConstraints", None)
-    pod["volumes"] = [v for v in pod.get("volumes", []) if v["name"] != "polaris-logs"] + volumes
+    pod["volumes"] = list(pod.get("volumes", [])) + volumes
     # A log sidecar of the release (ADR-081's placeholder name) would hold the port.
     pod["initContainers"] = [sidecar] + [c for c in pod.get("initContainers", [])
                                          if c["name"] != "log-sidecar"]
     env = quarkus_env(max_length)
-    for container in pod["containers"]:
-        container["volumeMounts"] = [m for m in container.get("volumeMounts", [])
-                                     if m["name"] != "polaris-logs"]
     polaris = next((c for c in pod["containers"] if c["name"] == POLARIS_CONTAINER),
                    pod["containers"][0])
     drop = set(env) | {"JAVA_OPTS"}

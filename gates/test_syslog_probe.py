@@ -49,11 +49,8 @@ def source():
                                      {"name": "A", "value": "1"},
                                      {"name": "S", "valueFrom": {"secretKeyRef": {
                                          "name": "polaris-db", "key": "k"}}}],
-                             "volumeMounts": [{"name": "polaris-logs", "mountPath": "/logs"},
-                                              {"name": "config", "mountPath": "/c"}]}],
-                         "volumes": [{"name": "polaris-logs",
-                                      "persistentVolumeClaim": {"claimName": "polaris-logs"}},
-                                     {"name": "config", "configMap": {"name": "polaris"}}]}}},
+                             "volumeMounts": [{"name": "config", "mountPath": "/c"}]}],
+                         "volumes": [{"name": "config", "configMap": {"name": "polaris"}}]}}},
         "status": {"readyReplicas": 2}}
 
 
@@ -119,11 +116,11 @@ class Clone(unittest.TestCase):
         self.assertEqual(labels["lakehouse/polaris-pg-client"], "true")
         self.assertNotIn("polaris", set(labels.values()))
 
-    def test_no_affinity_and_no_log_claim(self):
+    def test_no_affinity_and_no_claim(self):
         self.assertNotIn("affinity", self.pod)
         names = [v["name"] for v in self.pod["volumes"]]
-        self.assertNotIn("polaris-logs", names)
         self.assertIn("config", names)
+        self.assertEqual([v for v in self.pod["volumes"] if "persistentVolumeClaim" in v], [])
         polaris = self.pod["containers"][0]
         self.assertEqual([m["name"] for m in polaris["volumeMounts"]], ["config"])
 

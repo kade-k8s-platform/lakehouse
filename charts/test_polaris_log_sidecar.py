@@ -535,7 +535,8 @@ class Fragment(unittest.TestCase):
 
 
 class Untouched(unittest.TestCase):
-    def test_upstream_chart_and_the_lakehouse_values_are_unchanged(self):
+    def test_upstream_chart_is_unchanged(self):
+        # values-lakehouse.yaml is ours and changes with the release (L7d dropped the claim).
         if not os.path.isdir(os.path.join(ROOT, ".git")) or not shutil.which("git"):
             self.skipTest("not a git checkout")
         base = subprocess.run(["git", "-C", ROOT, "rev-parse", "--verify", "-q", "origin/main"],
@@ -543,7 +544,8 @@ class Untouched(unittest.TestCase):
         if base.returncode != 0:
             self.skipTest("no origin/main to compare with")
         diff = subprocess.run(["git", "-C", ROOT, "diff", "--quiet", "origin/main", "--",
-                               "charts/polaris"], check=False)
+                               "charts/polaris",
+                               ":(exclude)charts/polaris/values-lakehouse.yaml"], check=False)
         self.assertEqual(diff.returncode, 0, "charts/polaris differs from origin/main")
 
     def test_the_install_installs_it_and_passes_the_fragment(self):
