@@ -91,19 +91,6 @@ extraEnv:
   - name: JAVA_OPTS
     value: "-XX:MaxRAMPercentage=50.0 -XX:+UseZGC -XX:+ZGenerational -XX:+ExitOnOutOfMemoryError"
 
-# One JSON log file per pod on the shared claim polaris-logs, which release.py creates before
-# Polaris (ADR-014, ADR-036). The chart's own `logging.file` stays off: its claim is
-# ReadWriteOnce and belongs to the release. Rolled hourly; the size roll is set out of reach,
-# since it cannot be turned off. Stdout is unchanged (ADR-024).
-extraVolumes:
-  - name: polaris-logs
-    persistentVolumeClaim:
-      claimName: polaris-logs
-
-extraVolumeMounts:
-  - name: polaris-logs
-    mountPath: /deployments/logs
-
 # Polaris issues its own tokens, signed with one key shared by every replica (ADR-026).
 authentication:
   type: internal
@@ -128,11 +115,3 @@ advancedConfig:
   quarkus.datasource.jdbc.additional-jdbc-properties.loginTimeout: "3"
   quarkus.datasource.jdbc.additional-jdbc-properties.socketTimeout: "10"
   quarkus.datasource.jdbc.additional-jdbc-properties.tcpKeepAlive: "true"
-  # The file appender (ADR-036); the batch reads these names (images/polaris-log-batch).
-  quarkus.log.file.enabled: "true"
-  quarkus.log.file.path: "/deployments/logs/polaris-${HOSTNAME}.log"
-  quarkus.log.file.json.enabled: "true"
-  quarkus.log.file.rotation.file-suffix: ".yyyy-MM-dd-HH.gz"
-  quarkus.log.file.rotation.rotate-on-boot: "false"
-  quarkus.log.file.rotation.max-file-size: "2G"
-  quarkus.log.file.rotation.max-backup-index: "50"

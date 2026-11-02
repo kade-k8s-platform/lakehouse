@@ -53,8 +53,15 @@ def helm_template(*sets, values=None):
             os.unlink(path)
 
 
+def batch_values():
+    """The chart's image values from this checkout (the file's own copy: release.py no longer
+    installs the batch; L7e removes this file with the chart)."""
+    repository, tag = release.batch_image().rsplit(":", 1)
+    return {"image": {"repository": repository, "tag": tag}}
+
+
 def render(*sets):
-    result = helm_template(*sets, values=release.batch_values({}))
+    result = helm_template(*sets, values=batch_values())
     if result.returncode != 0:
         raise AssertionError(result.stderr)
     return [d for d in yaml.safe_load_all(result.stdout) if d]
@@ -100,16 +107,6 @@ class Rendered(unittest.TestCase):
 
     def test_the_image_is_the_one_built_from_this_repository(self):
         self.assertEqual(self.container["image"], release.batch_image())
-
-    def test_it_mounts_the_claim_polaris_writes_to_at_the_same_path(self):
-        polaris = polaris_rendered()
-        props = one(polaris, "ConfigMap")["data"]["application.properties"]
-        (path,) = re.findall(r"^quarkus\.log\.file\.path=(.*)$", props, re.M)
-        (volume,) = [v for v in self.pod["volumes"] if "persistentVolumeClaim" in v]
-        self.assertEqual(volume["persistentVolumeClaim"]["claimName"], release.POLARIS_LOGS)
-        (mount,) = [m for m in self.container["volumeMounts"] if m["name"] == volume["name"]]
-        self.assertEqual(os.path.dirname(path), mount["mountPath"])
-        self.assertEqual(self.env["LOG_DIR"], mount["mountPath"])
 
     def test_it_reads_the_files_polaris_pods_name_and_lists_those_pods(self):
         polaris = polaris_rendered()
@@ -167,11 +164,11 @@ class ValuesSchema(unittest.TestCase):
         self.assertIn("tag", result.stderr)
 
     def test_an_unknown_value_is_refused(self):
-        result = helm_template("nosuch=1", values=release.batch_values({}))
+        result = helm_template("nosuch=1", values=batch_values())
         self.assertNotEqual(result.returncode, 0)
 
     def test_a_schedule_other_than_a_cron_line_is_refused(self):
-        result = helm_template("schedule=hourly", values=release.batch_values({}))
+        result = helm_template("schedule=hourly", values=batch_values())
         self.assertNotEqual(result.returncode, 0)
 
 

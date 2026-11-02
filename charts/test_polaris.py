@@ -236,29 +236,19 @@ class Rendered(unittest.TestCase):
         self.assertEqual(self.props["polaris.authorization.opa.policy-uri"],
                          GATE_ENV["POLARIS_OPA_URL"])
 
-    def test_polaris_writes_one_json_file_per_pod_where_the_chart_writes_none(self):
-        # ADR-014, ADR-036: the chart's own file appender stays off, because its claim is
-        # ReadWriteOnce and the release's; ours is set in advancedConfig.
+    def test_polaris_writes_no_log_file(self):
+        # ADR-081, ADR-082: the logs leave through the sidecar; no file appender.
         self.assertIs(self.defaults["logging"]["file"]["enabled"], False)
         self.assertEqual({k: v for k, v in self.props.items() if k.startswith("quarkus.log.file.")},
-                         {"quarkus.log.file.enabled": "true",
-                          "quarkus.log.file.path": "/deployments/logs/polaris-${HOSTNAME}.log",
-                          "quarkus.log.file.json.enabled": "true",
-                          "quarkus.log.file.rotation.file-suffix": ".yyyy-MM-dd-HH.gz",
-                          "quarkus.log.file.rotation.rotate-on-boot": "false",
-                          "quarkus.log.file.rotation.max-file-size": "2G",
-                          "quarkus.log.file.rotation.max-backup-index": "50"})
+                         {"quarkus.log.file.enabled": "false"})
 
     def test_the_chart_creates_no_log_claim_of_its_own(self):
         self.assertNotIn("PersistentVolumeClaim", [d["kind"] for d in self.docs])
 
-    def test_the_shared_claim_is_mounted_where_polaris_writes_its_files(self):
-        (volume,) = [v for v in self.pod["volumes"] if "persistentVolumeClaim" in v]
-        self.assertEqual(volume["persistentVolumeClaim"], {"claimName": release.POLARIS_LOGS})
-        mounts = {m["name"]: m["mountPath"] for m in self.container["volumeMounts"]}
-        self.assertEqual(mounts[volume["name"]], "/deployments/logs")
-        self.assertTrue(self.props["quarkus.log.file.path"].startswith(
-            mounts[volume["name"]] + "/"))
+    def test_the_pod_mounts_no_log_claim(self):
+        self.assertEqual([v for v in self.pod["volumes"] if "persistentVolumeClaim" in v], [])
+        self.assertNotIn("/deployments/logs",
+                         [m["mountPath"] for m in self.container["volumeMounts"]])
 
     def test_polaris_runs_in_utc_so_its_rolls_are_named_in_utc(self):
         self.assertEqual({v["name"]: v.get("value") for v in self.container["env"]}["TZ"], "UTC")

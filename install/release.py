@@ -20,49 +20,42 @@
    c. The bootstrap (ADR-026): Polaris's admin tool, in a short-lived pod, creates the schema,
       the realm and its root principal from the `polaris-root` Secret. A realm already
       bootstrapped is kept.
-   d. The claim polaris-logs (ADR-036): ReadWriteMany, its storage class (which must exist)
-      and size from `.env`, applied outside any Helm release so an uninstall keeps the logs.
-   e. The log sidecar's configuration (ADR-081, ADR-082): charts/polaris-log-sidecar, the
+   d. The log sidecar's configuration (ADR-081, ADR-082): charts/polaris-log-sidecar, the
       ConfigMap polaris-log-sidecar, with the output host and port from
       `POLARIS_LOG_OUTPUT_HOST` and `POLARIS_LOG_OUTPUT_PORT`. Polaris's pods mount it, so a
-      failure stops the install here. An empty host is said, not a problem: the chart's
-      placeholder resolves nowhere.
-   f. Polaris 1.6.0 from charts/polaris (ADR-009), with values-lakehouse.yaml, the sidecar's
+      failure stops the install here, and so does an empty host: the chart's placeholder
+      resolves nowhere.
+   e. Polaris 1.6.0 from charts/polaris (ADR-009), with values-lakehouse.yaml, the sidecar's
       polaris-values.yaml and the values from `.env` (the database host, the policy endpoint,
       the console's origin, allowed by CORS only while the console is enabled, and a
       checksum of the sidecar chart as a pod annotation), waited on until rolled out. Its
-      pods write their log files to the claim and forward them through the sidecar.
-   g. Datahub's network policies (ADR-048 §4, ADR-066 §4, ADR-071 §5):
+      pods forward their logs through the sidecar.
+   f. Datahub's network policies (ADR-048 §4, ADR-066 §4, ADR-071 §5):
       charts/datahub-network-policies, default deny in its namespace, each store and GMS open
       to their labelled clients, datahub-pg to the operator, GMS to the emitters' namespaces and
       the frontend to the ingress controller's, from `.env`.
-   h. Datahub's PostgreSQL: the `Cluster` datahub-pg from charts/datahub-postgres (ADR-066),
+   g. Datahub's PostgreSQL: the `Cluster` datahub-pg from charts/datahub-postgres (ADR-066),
       asynchronous, waited on as polaris-pg is. Its backups go to `DATAHUB_BACKUP_BUCKET` on
       `S3_ENDPOINT` with the key in `datahub-backup-s3`.
-   i. Datahub's Kafka: the StatefulSet datahub-kafka from charts/datahub-kafka (ADR-068), one
+   h. Datahub's Kafka: the StatefulSet datahub-kafka from charts/datahub-kafka (ADR-068), one
       KRaft broker, waited on until rolled out and ready.
-   j. Datahub's OpenSearch: the StatefulSet datahub-opensearch from upstream's chart in
+   i. Datahub's OpenSearch: the StatefulSet datahub-opensearch from upstream's chart in
       charts/datahub-opensearch with its values-lakehouse.yaml (ADR-070), one node, waited on
       until rolled out and ready.
-   k. Datahub (ADR-071 §7): its four Secrets from init-env read for their key names, then
+   j. Datahub (ADR-071 §7): its four Secrets from init-env read for their key names, then
       upstream's chart in charts/datahub with its values-lakehouse.yaml, through helm's --wait:
       the blocking system-update Job completes before GMS and the frontend start, both are
       ready, and the non-blocking Job completes. An empty DATAHUB_EMITTER_NAMESPACE_LABEL is
       said, not a problem. Its ingestion CronJob (ADR-076 §2) gets Polaris's URI from
       `NS_CATALOG_POLARIS` and the catalogs of DATAHUB_INGEST_POLARIS_CATALOGS, each name
       checked; with none it is suspended, and the install says so.
-   l. Datahub's Polaris principal (ADR-076 §3): `datahub-polaris-principal` from init-env read
+   k. Datahub's Polaris principal (ADR-076 §3): `datahub-polaris-principal` from init-env read
       for its key names, then a short-lived pod in Datahub's namespace on the ingestion image,
       the Secret mounted and root's credential on stdin, gets a token as root, creates
       `datahub_ingest` (one already there is kept), resets its credentials to the Secret's,
       and gets a token as it. No grant: the policy endpoint decides what it may do.
 2. After every service of step 1 (ADR-029, ADR-037):
-   a. The log batch (ADR-036): charts/polaris-log-batch with the image built from this
-      checkout (batch_image), pulled from `IMAGE_REGISTRY` or, when it is empty, the GitHub
-      Container Registry the release workflow pushes it to (ADR-042); then the CronJob read
-      back to check it runs that image. Its failure stops the install. It stays until the
-      sidecar replaces it (L7).
-   b. The console, when `POLARIS_CONSOLE_ENABLED=true` (ADR-028): charts/polaris-console with
+   a. The console, when `POLARIS_CONSOLE_ENABLED=true` (ADR-028): charts/polaris-console with
       its values-lakehouse.yaml and the URL at which the browser reaches Polaris, waited on
       until rolled out. A maintainer tool, never part of how Polaris operates: its problems
       are printed and the install still passes.
@@ -73,6 +66,24 @@ principal do not run and nothing waits: the dry-run gate (ADR-038).
 Settings come from `.env` at the repository root, then the environment, which wins. Every
 kubectl and helm call names `$KUBE_CONTEXT` (no default, ADR-004) and its namespace (ADR-007).
 Needs kubectl and helm.
+
+Upgrading and rolling back. The log claim `polaris-logs` and the log batch are no longer
+installed (ADR-081, ADR-082). Installing this release over a cluster that ran an earlier one:
+- The claim stays: it was applied with kubectl, outside Helm, so no `helm upgrade` removes it.
+- The Helm release `polaris-log-batch` stays and its CronJob keeps running on its schedule
+  against the claim; this install no longer upgrades it.
+- An empty POLARIS_LOG_OUTPUT_HOST in `.env` now stops the install (step 1 d, after the bootstrap,
+  before Polaris is touched): the earlier release only said so. Set it before installing.
+- Polaris's pods roll once: they lose the claim mount and the file appender; the sidecar
+  already forwards their logs.
+- Cleaning up is manual, destructive and needs Kade's approval when it runs (ADR-004):
+  `helm uninstall polaris-log-batch -n <NS_CATALOG_POLARIS>`, then
+  `kubectl delete pvc polaris-logs -n <NS_CATALOG_POLARIS>`, each with `--context
+  $KUBE_CONTEXT`. The pods no longer mount the claim, so the delete does not hang. No step here
+  deletes anything.
+- A rollback to an older release needs `POLARIS_LOGS_STORAGE_CLASS` and `POLARIS_LOGS_SIZE` in
+  `.env` (its release.py stops without them) and the claim (it applies it again when absent;
+  deleting the claim first loses the old log files).
 
 `batch-image` prints the batch's image on the GitHub Container Registry, whatever `.env` says:
 the image the release workflow pushes (ADR-042).
@@ -257,9 +268,6 @@ BOOTSTRAP_WRAPPER = f'cat >/dev/null; exec {ADMIN_TOOL_ENTRYPOINT} "$@" 1>&2'
 # (polaris-core AuthBootstrapUtil.java); the schema script it ran first changes nothing.
 ALREADY_BOOTSTRAPPED = "It appears this metastore manager has already been bootstrapped"
 BOOTSTRAP_TAIL = 20
-# The claim Polaris writes its log files to and the batch reads (ADR-036); its name is also
-# in charts/polaris/values-lakehouse.yaml.
-POLARIS_LOGS = "polaris-logs"
 # The log batch (ADR-014, ADR-036): its chart, and its image built from this repository,
 # tagged by a hash of the files that go into it.
 BATCH = "polaris-log-batch"
@@ -861,13 +869,6 @@ def batch_image(directory=BATCH_IMAGE_DIR, registry=DEFAULT_IMAGE_REGISTRY):
     return f"{registry}/{BATCH}:{digest.hexdigest()[:12]}"
 
 
-def batch_values(env):
-    """The batch chart's values from this checkout and `.env`: the image built from it, in
-    the registry the cluster pulls from."""
-    repository, tag = batch_image(registry=image_registry(env)).rsplit(":", 1)
-    return {"image": {"repository": repository, "tag": tag}}
-
-
 def ingestion_image(path=DATAHUB_VALUES):
     """The ingestion CronJob's image, by the tag and digest in charts/datahub's values."""
     with open(path, encoding="utf-8") as f:
@@ -997,50 +998,14 @@ def bootstrap(env, run, image=None, name=None, dry_run=False):
             f"{tail}"], []
 
 
-def logs_claim_manifest(env):
-    """The claim polaris-logs: ReadWriteMany, its class and size from `.env`, outside any Helm
-    release so an uninstall keeps the logs (ADR-036)."""
-    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
-            "metadata": {"name": POLARIS_LOGS, "namespace": env["NS_CATALOG_POLARIS"],
-                         "labels": {"app.kubernetes.io/name": "polaris",
-                                    "app.kubernetes.io/component": "logs"}},
-            "spec": {"accessModes": ["ReadWriteMany"], "volumeMode": "Filesystem",
-                     "storageClassName": env["POLARIS_LOGS_STORAGE_CLASS"],
-                     "resources": {"requests": {"storage": env["POLARIS_LOGS_SIZE"]}}}}
-
-
-def logs_claim(env, run, dry_run=False):
-    """Step 1, before Polaris: the claim Polaris and the log batch share (ADR-036). Its storage
-    class must exist; the claim binds once Polaris's pods mount it. Returns (problems, notes);
-    no call is made while the class or the size is empty."""
-    empty = [f"{var} is empty: set the claim's {what} in .env (ADR-036)"
-             for var, what in (("POLARIS_LOGS_STORAGE_CLASS", "ReadWriteMany storage class"),
-                               ("POLARIS_LOGS_SIZE", "size")) if not env.get(var)]
-    if empty:
-        return empty, []
-    namespace, context = env["NS_CATALOG_POLARIS"], env["KUBE_CONTEXT"]
-    cls = env["POLARIS_LOGS_STORAGE_CLASS"]
-    code, out = run(["kubectl", "--context", context, "-n", namespace, "get", "storageclass",
-                     cls, "-o", "name"])
-    if code != 0:
-        return [f"the storage class {cls} does not exist: the log claim needs a ReadWriteMany "
-                f"class (ADR-036): {out.strip()}"], []
-    code, out = run(["kubectl", "--context", context, "-n", namespace, "apply", "-f", "-"]
-                    + (["--dry-run=server"] if dry_run else []),
-                    json.dumps(logs_claim_manifest(env)))
-    if code != 0:
-        return [f"the claim {POLARIS_LOGS} in {namespace} was refused: {out.strip()}"], []
-    what = (f"the claim {POLARIS_LOGS} in {namespace}: ReadWriteMany, class {cls}, "
-            f"{env['POLARIS_LOGS_SIZE']}")
-    return [], [f"Step 1: {what}, server-side dry-run passed." if dry_run
-                else f"Step 1: {what}."]
-
-
 def log_sidecar(env, run, dry_run=False):
-    """Step 1, after the log claim and before Polaris: the sidecar's ConfigMap from
-    charts/polaris-log-sidecar, the output from `.env` (ADR-081, ADR-082). Polaris's pods mount
-    it, so a failure stops the install. An empty host is a note, not a problem. Returns
-    (problems, notes); a bad port makes no call."""
+    """Step 1, before Polaris: the sidecar's ConfigMap from charts/polaris-log-sidecar, the
+    output from `.env` (ADR-081, ADR-082). Polaris's pods mount it, so a failure stops the
+    install, and so does an empty or blank host: the chart's placeholder resolves nowhere.
+    Returns (problems, notes); an empty host or a bad port makes no call."""
+    if not env.get("POLARIS_LOG_OUTPUT_HOST", "").strip():
+        return ["POLARIS_LOG_OUTPUT_HOST is empty: set the main Fluent Bit's host in .env "
+                "(ADR-081, ADR-082)"], []
     try:
         values = sidecar_values(env)
     except ValueError as e:
@@ -1056,13 +1021,8 @@ def log_sidecar(env, run, dry_run=False):
         os.unlink(f.name)
     if code != 0:
         return [f"helm upgrade {SIDECAR} in {namespace} failed: {out.strip()}"], []
-    output = values.get("output", {})
-    if "host" in output:
-        where = f"{output['host']}:{output.get('port', 'the default port')}"
-    else:
-        where = (f"the chart's placeholder main-fluent-bit-standin, port "
-                 f"{output.get('port', 'by default')}, which resolves nowhere on a target "
-                 f"cluster: POLARIS_LOG_OUTPUT_HOST is empty")
+    output = values["output"]
+    where = f"{output['host']}:{output.get('port', 'the default port')}"
     what = (f"the log sidecar's configuration (ConfigMap {SIDECAR}) in {namespace}, "
             f"forwarding to {where}")
     return [], [f"Step 1: {what}, server-side dry-run passed." if dry_run
@@ -1097,36 +1057,6 @@ def polaris(env, run, dry_run=False):
         return [f"deployment/{POLARIS} in {namespace} did not finish its rollout: "
                 f"{out.strip()}"], []
     return [], [f"Step 1: deployment/{POLARIS} in {namespace} rolled out."]
-
-
-def log_batch(env, run, dry_run=False):
-    """Step 2, first: the log batch's CronJob from charts/polaris-log-batch with the image built
-    from this checkout, in the registry from `.env` (ADR-042), then read back to check it runs
-    that image (ADR-036). A failure stops the install (ADR-037). Returns (problems, notes)."""
-    namespace, context = env["NS_CATALOG_POLARIS"], env["KUBE_CONTEXT"]
-    expected = batch_image(registry=image_registry(env))
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-        json.dump(batch_values(env), f)
-    try:
-        helm = ["helm", "--kube-context", context, "-n", namespace, "upgrade", "--install",
-                BATCH, BATCH_CHART, "-f", f.name]
-        code, out = run(helm + (["--dry-run=server"] if dry_run else []))
-    finally:
-        os.unlink(f.name)
-    if code != 0:
-        return [f"helm upgrade {BATCH} in {namespace} failed: {out.strip()}"], []
-    if dry_run:
-        return [], [f"Step 2: the log batch in {namespace}, server-side dry-run passed."]
-    code, out = run(["kubectl", "--context", context, "-n", namespace, "get",
-                     f"cronjob/{BATCH}", "-o",
-                     "jsonpath={.spec.jobTemplate.spec.template.spec.containers[0].image}"])
-    if code != 0:
-        return [f"cronjob/{BATCH} in {namespace} cannot be read: {out.strip()}"], []
-    image = out.strip()
-    if image != expected:
-        return [f"cronjob/{BATCH} in {namespace} runs {image or 'no image'}, "
-                f"expected {expected}"], []
-    return [], [f"Step 2: cronjob/{BATCH} in {namespace} runs {image}."]
 
 
 def console(env, run, dry_run=False):
@@ -1164,7 +1094,7 @@ def console(env, run, dry_run=False):
 
 def install(env, run, supported, dry_run):
     """Every step in order; the first step with problems stops the rest. The console's
-    problems are notes: it never fails a release (ADR-028); the batch's and the sidecar's stop it
+    problems are notes: it never fails a release (ADR-028); the sidecar's stops it
     (ADR-037, ADR-082)."""
     notes = []
     for step in (lambda: check_preconditions(env, run, supported),
@@ -1172,7 +1102,6 @@ def install(env, run, supported, dry_run):
                  lambda: polaris_postgres(env, run, dry_run),
                  lambda: endpoints_answer(env, run),
                  lambda: bootstrap(env, run, dry_run=dry_run),
-                 lambda: logs_claim(env, run, dry_run),
                  lambda: log_sidecar(env, run, dry_run),
                  lambda: polaris(env, run, dry_run),
                  lambda: datahub_network_policies(env, run, dry_run),
@@ -1180,8 +1109,7 @@ def install(env, run, supported, dry_run):
                  lambda: datahub_kafka(env, run, dry_run),
                  lambda: datahub_opensearch(env, run, dry_run),
                  lambda: datahub(env, run, dry_run),
-                 lambda: datahub_principal(env, run, dry_run=dry_run),
-                 lambda: log_batch(env, run, dry_run)):
+                 lambda: datahub_principal(env, run, dry_run=dry_run)):
         problems, more = step()
         notes += more
         if problems:

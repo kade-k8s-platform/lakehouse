@@ -6,8 +6,8 @@
 #
 # Upstream runs `tpl` over extraInitContainers, so no template syntax may appear here, and so the
 # values of this chart are repeated as literals: charts/test_polaris_log_sidecar.py keeps both
-# equal. Helm replaces lists across -f files, so extraVolumes holds values-lakehouse.yaml's claim
-# entry as well as the ConfigMap; the test requires every entry of that list to survive.
+# equal. Helm replaces lists across -f files, so extraVolumes holds the ConfigMap, the only volume the
+# release adds; values-lakehouse.yaml has none.
 #
 # UNVERIFIED (L3's gate proves them): that the image starts under this securityContext, that
 # Polaris 1.6.0 accepts the quarkus.log.syslog.* keys, and what its JSON carries.
@@ -36,15 +36,11 @@ extraInitContainers:
         drop: ["ALL"]
 
 extraVolumes:
-  - name: polaris-logs # as in values-lakehouse.yaml, read by the batch until L7
-    persistentVolumeClaim:
-      claimName: polaris-logs
   - name: log-sidecar-config
     configMap:
       name: polaris-log-sidecar
 
-# Strings, like the file appender's. The file appender stays until L7 (ADR-081 Decision 7); so
-# does stdout.
+# Strings, as Quarkus reads them. Stdout is unchanged (ADR-024); there is no file appender.
 advancedConfig:
   quarkus.log.syslog.enabled: "true"
   quarkus.log.syslog.endpoint: "localhost:5140"
