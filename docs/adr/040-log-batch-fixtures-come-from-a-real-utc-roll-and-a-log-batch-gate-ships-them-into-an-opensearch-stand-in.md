@@ -1,6 +1,6 @@
 # ADR-040: Log batch fixtures come from a real UTC roll; a Log Batch Gate ships them into an OpenSearch stand-in
 
-- **Status:** Amended by ADR-041
+- **Status:** Superseded by ADR-083
 - **Date:** 2026-10-11
 - **Related:** ADR-002, ADR-009, ADR-024, ADR-030, ADR-031, ADR-032, ADR-036, ADR-038, ADR-039
 
