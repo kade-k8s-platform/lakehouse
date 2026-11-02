@@ -1,6 +1,6 @@
 # Deletes the branches that outlived their work (ADR-032): a merged `claude/*` branch still at
-# its PR's head commit, and `gate/dry-run/<task>`, `gate/smoke/<task>` and
-# `gate/log-batch/<task>` (ADR-040) once no other branch and no open PR has that task.
+# its PR's head commit, and `gate/dry-run/<task>` and `gate/smoke/<task>` (any
+# `gate/<type>/<task>`, ADR-049 §4) once no other branch and no open PR has that task.
 # scripts/branch_cleanup.py decides; it is checked out from main, never from a PR. Whatever it
 # prints, this workflow deletes only `claude/` and `gate/` names.
 # Runs when a PR closes, daily, and by hand. Auto-merge merges with GITHUB_TOKEN, which starts

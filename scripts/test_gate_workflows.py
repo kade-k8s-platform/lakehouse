@@ -13,6 +13,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOWS = os.path.join(ROOT, ".github", "workflows")
+GATES_DIR = os.path.join(ROOT, "gates")
 DELETE = "delete-gate-branch.yml"
 DELETE_USES = f"./.github/workflows/{DELETE}"
 GUARD = "always() && startsWith(github.ref, 'refs/heads/gate/')"
@@ -137,7 +138,7 @@ class Reader(unittest.TestCase):
 class GateWorkflows(unittest.TestCase):
     def test_the_known_gate_workflows_are_found(self):
         # A reader that finds nothing would pass every check below.
-        self.assertLessEqual({"dry-run.yml", "smoke.yml", "log-batch.yml"}, set(gate_workflows()))
+        self.assertLessEqual({"dry-run.yml", "smoke.yml"}, set(gate_workflows()))
 
     def test_every_gate_workflow_ends_with_the_delete_job(self):
         for name, workflow in gate_workflows().items():
@@ -516,3 +517,39 @@ class DeleteWorkflow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LogBatchGateIsGone(unittest.TestCase):
+    """The old log-batch path's gate is removed (ADR-081, L7b)."""
+
+    def test_the_two_workflows_are_gone(self):
+        for name in ("log-batch.yml", "create-fixtures.yml"):
+            with self.subTest(workflow=name):
+                self.assertFalse(os.path.exists(os.path.join(WORKFLOWS, name)), name)
+        self.assertNotIn("log-batch.yml", gate_workflows())
+
+    def test_the_gate_modules_and_their_tests_are_gone(self):
+        for name in ("log_batch_gate.py", "fixtures.py",
+                     "test_log_batch_gate.py", "test_fixtures.py"):
+            with self.subTest(file=name):
+                self.assertFalse(os.path.exists(os.path.join(GATES_DIR, name)), name)
+
+    def test_no_workflow_names_a_deleted_file(self):
+        names = ("create-fixtures.yml", "log-batch.yml", "gates/fixtures.py",
+                 "log_batch_gate", "gate/log-batch")
+        for name in sorted(os.listdir(WORKFLOWS)):
+            with open(os.path.join(WORKFLOWS, name), encoding="utf-8") as f:
+                text = f.read()
+            for needle in names:
+                with self.subTest(workflow=name, needle=needle):
+                    self.assertNotIn(needle, text)
+
+    def test_no_gate_module_imports_a_deleted_one(self):
+        pattern = re.compile(r"^\s*(import|from)\s+(fixtures|log_batch_gate)\b", re.M)
+        for name in sorted(os.listdir(GATES_DIR)):
+            if not name.endswith(".py"):
+                continue
+            with open(os.path.join(GATES_DIR, name), encoding="utf-8") as f:
+                text = f.read()
+            with self.subTest(module=name):
+                self.assertIsNone(pattern.search(text))
