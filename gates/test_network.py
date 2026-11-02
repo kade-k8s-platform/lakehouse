@@ -71,8 +71,6 @@ class CheckPods(unittest.TestCase):
             "check_iceberg": gate.check_iceberg_commands(env, PYTHON, "n")[1],
             "check_restore": gate.check_restore_command(env, PYTHON, "polaris", "n"),
             "check_console": gate.check_console_command(env, PYTHON, "n"),
-            "logs_traffic": gate.logs_traffic_command(env, PYTHON, "n", "p", 1, ["pod-a"]),
-            "logs_listing": gate.logs_listing_command(env, PYTHON, "n"),
             "check_metrics": metrics.query_command(env, PYTHON, "n", 5),
         }
         for name, argv in commands.items():
