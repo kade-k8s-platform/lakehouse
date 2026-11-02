@@ -14,7 +14,7 @@ the second column belong to other teams. Here they are only interfaces, configur
 |---|---|
 | **Apache Polaris** (ADR-009), with its own PostgreSQL on CloudNativePG (ADR-008, ADR-010) | **Object storage**, S3-compatible: the Iceberg warehouse and backups |
 | **Polaris console** (`apache/polaris-tools` `console/`) | **Observability**: Fluent Bit, OpenSearch, Prometheus, Grafana |
-| **The Polaris log batch** (ADR-014): processed log files ready for Fluent Bit | **ETL**: Spark, Flink, the shared Kafka |
+| **The Polaris log batch** (ADR-014) and **log sidecar** (ADR-081, ADR-082): processed log files ready for Fluent Bit, and the kept lines forwarded to it | **ETL**: Spark, Flink, the shared Kafka |
 | **Datahub**, with PostgreSQL on CNPG, a single-broker Kafka and a small OpenSearch, used by Datahub only (ADR-025) | **Query clients**: Trino, Iceberg clients, per-user StarRocks |
 | | **SSO**: Keycloak |
 | | **The catalog gateway**: Polaris's authorizer and wrapper API, built elsewhere |
@@ -36,6 +36,8 @@ flowchart LR
     POL -->|"warehouse"| S3[("object storage")]
     POL -.->|"original logs"| LB["log batch"]
     LB -.->|"processed files"| FB["Fluent Bit"] --> OS[("OpenSearch")]
+    POL -.->|"syslog"| SC["log sidecar<br/>(filters)"]
+    SC -.->|"kept lines"| FB
     DH["Datahub"] -->|"ingests metadata"| POL
     DH --> DPG[("PostgreSQL<br/>CNPG")]
     DH --> DK[("Kafka")]
@@ -70,7 +72,7 @@ source does not matter for operation. What follows is the list they cover.
     stand-in (ADR-031).
   - The install order without storage and monitoring (restated in full by ADR-045).
   - Fluent Bit and OpenSearch belong to the observability team; this repository delivers the
-    log files ADR-014 describes, in a documented format (ADR-024, ADR-081).
+    log files ADR-014 describes, in a documented format (ADR-081).
   - ADR-014: its open question (sharing the log volume across nodes) is answered before the
     batch is built.
   - ADR-017: the gate installs stand-ins (SeaweedFS, Fluent Bit) that are never released
@@ -211,8 +213,7 @@ source does not matter for operation. What follows is the list they cover.
   count them, both pods' files are read, and the second run changes nothing.
   The release flow pushes the batch's image to GHCR under its content-hash tag, and a
   cluster pulls it from `IMAGE_REGISTRY` or GHCR (ADR-080, #55); `platform-2026.10.12`,
-  the first release with Polaris, pushed it (#78).
-- Backups (2026-10-12, ADR-043, #83). polaris-pg archives its WAL and takes a daily base
+  the first release with Polaris, pushed it (#78).- Backups (2026-10-12, ADR-043, #83). polaris-pg archives its WAL and takes a daily base
   backup through the Barman Cloud Plugin into `POLARIS_BACKUP_BUCKET`, with its own key in
   `polaris-backup-s3`; step 0 requires the plugin and its `ObjectStore` CRD. The gate
   installs cert-manager and the plugin from pinned manifests, and the smoke gate's
