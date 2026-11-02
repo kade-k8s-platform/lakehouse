@@ -47,8 +47,9 @@ JOIN = {"cnpg.io/jobRole": "join"}
 # The sources whose probe pod carries labels: CNPG's join label, Polaris's pod labels
 # (charts/polaris-network-policies' selector) or a client label, never the check label.
 POD_LABELS = {"polaris-join": JOIN,
-              "polaris-pod": {"app.kubernetes.io/name": "polaris",
-                              "app.kubernetes.io/instance": "polaris"}, "none-join": JOIN, "datahub-join": JOIN,
+              "polaris-pod": standins.POLARIS_POD_LABELS,
+              "none-join": JOIN,
+              "datahub-join": JOIN,
               "datahub-client": {release.DATAHUB_PG_CLIENT_LABEL: "true"},
               "datahub-kafka-client": {release.DATAHUB_KAFKA_CLIENT_LABEL: "true"},
               "datahub-opensearch-client": {release.DATAHUB_OPENSEARCH_CLIENT_LABEL: "true"},

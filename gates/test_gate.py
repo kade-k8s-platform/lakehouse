@@ -1981,6 +1981,7 @@ class CheckRestore(unittest.TestCase):
         self.assertEqual([args for kind, args in events if kind == "apply"], ["Backup"])
         self.assertEqual(kinds.count("archived"), gate.ARCHIVE_TIMEOUT // gate.RESTORE_POLL)
 
+
 class StandinEndpoints(unittest.TestCase):
     def test_the_sidecar_forwards_to_the_fluent_bit_standin(self):
         for direct in (False, True):
@@ -1992,7 +1993,7 @@ class StandinEndpoints(unittest.TestCase):
 
 
 class Standins(unittest.TestCase):
-    def test_applies_the_list_server_side_then_waits_for_both_deployments(self):
+    def test_applies_the_list_server_side_then_waits_for_every_deployment(self):
         (apply, stdin), (wait, _) = gate.standins_commands(
             STANDIN_ENV, "the stand-ins list")[:2]
         self.assertEqual(stdin, "the stand-ins list")
