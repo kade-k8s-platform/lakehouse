@@ -363,7 +363,7 @@ class DatahubOnly(unittest.TestCase):
                "datahub_kafka", "datahub_opensearch", "datahub")
     # Everything else release.py installs: none of it runs.
     OTHERS = ("network_policies", "polaris_postgres", "endpoints_answer", "bootstrap",
-              "logs_claim", "polaris", "log_batch", "console", "install")
+              "polaris", "console", "install")
     ENV = {"KUBE_CONTEXT": "kind-lakehouse-gate", "NS_CATALOG_DATAHUB": "catalog-datahub"}
     SUPPORTED = ["1.27"]
 
@@ -931,10 +931,33 @@ class GateEnv(unittest.TestCase):
         self.assertEqual(env["POLARIS_CONSOLE_API_URL"],
                          "http://polaris.catalog-polaris.svc.cluster.local:8181")
 
-    def test_the_log_claim_uses_the_shared_class(self):
-        env = gate.init_env.parse(gate.gate_env(TEMPLATE, gen=lambda name: "x"))
-        self.assertEqual(env["POLARIS_LOGS_STORAGE_CLASS"], gate.SHARED_CLASS)
-        self.assertEqual(env["POLARIS_LOGS_SIZE"], "1Gi")
+    def test_the_last_releases_claim_variables_are_supplied_without_the_template(self):
+        """The upgrade job runs the last release's release.py over this .env; it stops
+        without these two (L7g removes them with the shared class)."""
+        legacy = ("POLARIS_LOGS_STORAGE_CLASS", "POLARIS_LOGS_SIZE")
+        without = "\n".join(line for line in TEMPLATE.splitlines()
+                            if line.split("=", 1)[0] not in legacy) + "\n"
+        for template in (without, TEMPLATE):
+            with self.subTest(has_them=template is TEMPLATE):
+                text = gate.gate_env(template, gen=lambda name: "x")
+                env = gate.init_env.parse(text)
+                self.assertEqual(env["POLARIS_LOGS_STORAGE_CLASS"], gate.SHARED_CLASS)
+                self.assertEqual(env["POLARIS_LOGS_SIZE"], "1Gi")
+                for name in legacy:
+                    self.assertEqual(sum(line.startswith(name + "=")
+                                         for line in text.splitlines()), 1, name)
+
+    def test_the_committed_template_has_neither_old_variable(self):
+        with open(os.path.join(HERE, "..", ".env.template"), encoding="utf-8") as f:
+            names = gate.init_env.parse(f.read())
+        self.assertNotIn("POLARIS_LOGS_STORAGE_CLASS", names)
+        self.assertNotIn("POLARIS_LOGS_SIZE", names)
+
+    def test_the_gate_env_of_the_committed_template_still_has_both(self):
+        with open(os.path.join(HERE, "..", ".env.template"), encoding="utf-8") as f:
+            env = gate.init_env.parse(gate.gate_env(f.read()))
+        self.assertTrue(env["POLARIS_LOGS_STORAGE_CLASS"])
+        self.assertTrue(env["POLARIS_LOGS_SIZE"])
 
     def test_everything_else_is_left_to_init_env(self):
         env = gate.init_env.parse(gate.gate_env(TEMPLATE, gen=lambda name: "x"))
@@ -948,8 +971,7 @@ class GateEnv(unittest.TestCase):
                                                "POLARIS_WAREHOUSE_BUCKET", "POLARIS_OPA_URL",
                                                "POLARIS_BACKUP_BUCKET", "DATAHUB_BACKUP_BUCKET",
                                                "POLARIS_DB_HOST", "POLARIS_CONSOLE_ORIGIN",
-                                               "POLARIS_CONSOLE_API_URL",
-                                               "POLARIS_LOGS_STORAGE_CLASS", "POLARIS_LOGS_SIZE"):
+                                               "POLARIS_CONSOLE_API_URL"):
             with self.subTest(name=name):
                 self.assertTrue(env[name])
 

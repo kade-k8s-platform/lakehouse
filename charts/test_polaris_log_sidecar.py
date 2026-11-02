@@ -490,29 +490,24 @@ class Fragment(unittest.TestCase):
     def test_polaris_container_is_unchanged_by_the_fragment(self):
         (main,) = self.pod["containers"]
         self.assertEqual(main["name"], "polaris")
-        self.assertIn("/deployments/logs", [m["mountPath"] for m in main["volumeMounts"]])
+        self.assertNotIn("/deployments/logs", [m["mountPath"] for m in main["volumeMounts"]])
 
-    def test_the_claim_is_not_clobbered_and_the_configmap_is_mounted(self):
-        volumes = {v["name"]: v for v in self.pod["volumes"]}
+    def test_the_pod_volumes_are_only_the_configmap_and_what_the_chart_adds(self):
         with open(release.POLARIS_VALUES) as f:
             lakehouse = yaml.safe_load(f)
-        for v in lakehouse["extraVolumes"]:
-            self.assertIn(v, self.pod["volumes"])
+        self.assertNotIn("extraVolumes", lakehouse)
+        self.assertNotIn("extraVolumeMounts", lakehouse)
+        (added,) = self.fragment["extraVolumes"]
+        self.assertEqual(list(set(added) - {"name"}), ["configMap"])
+        self.assertEqual(added["name"], "log-sidecar-config")
+        self.assertEqual([v for v in self.pod["volumes"] if "persistentVolumeClaim" in v], [])
+        volumes = {v["name"]: v for v in self.pod["volumes"]}
         (side,) = self.pod["initContainers"]
         (mount,) = side["volumeMounts"]
         self.assertEqual((mount["mountPath"], mount["readOnly"]), (MOUNT, True))
         self.assertEqual(volumes[mount["name"]]["configMap"]["name"], self.values["configMapName"])
-
-    def test_no_log_file_for_this_path(self):
-        (side,) = self.pod["initContainers"]
-        self.assertEqual(len(side["volumeMounts"]), 1)
-        with open(release.POLARIS_VALUES) as f:
-            lakehouse = yaml.safe_load(f)
-        added = [v for v in self.fragment["extraVolumes"] if v not in lakehouse["extraVolumes"]]
-        self.assertEqual([list(set(v) - {"name"}) for v in added], [["configMap"]])
-        for v in added:
-            for kind in ("emptyDir", "persistentVolumeClaim", "hostPath"):
-                self.assertNotIn(kind, v)
+        for kind in ("emptyDir", "persistentVolumeClaim", "hostPath"):
+            self.assertNotIn(kind, added)
 
     def test_the_quarkus_keys_meet_the_sidecar(self):
         # UNVERIFIED on Polaris 1.6.0: the key names are Quarkus's, proved by L3's gate.
@@ -530,7 +525,8 @@ class Fragment(unittest.TestCase):
         # UNVERIFIED on Polaris 1.6.0: L3b set its ten other keys by environment variable only.
         self.assertEqual(p["quarkus.log.syslog.app-name"], v["appName"])
         self.assertEqual(fluent_bit()["pipeline"]["inputs"][0]["port"], v["port"])
-        self.assertIn("quarkus.log.file.enabled", p, "the file appender stays until L7")
+        self.assertEqual(p.get("quarkus.log.file.enabled", "false"), "false")
+        self.assertNotIn("quarkus.log.file.path", p)
 
     def test_the_fragment_and_the_chart_agree_on_the_names(self):
         for k in ("image",):
