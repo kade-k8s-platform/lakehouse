@@ -85,9 +85,6 @@ jobs:
       - name: The gate's Secrets, Polaris pointed at the stand-ins directly (ADR-006, ADR-053)
         run: python3 gates/gate.py secrets --direct
 
-      - name: The log batch's image, built from this checkout and loaded into kind (ADR-036)
-        run: python3 gates/gate.py batch-image
-
       - name: The stand-ins, reachable from Polaris's namespace and CPU-limited (ADR-031, ADR-053)
         run: python3 gates/gate.py standins --direct
 

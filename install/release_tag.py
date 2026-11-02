@@ -35,9 +35,6 @@ Usage:
       prints the rc/ branches among BRANCHES of FINAL's release and every older one.
   python3 install/release_tag.py notes TAG COMMIT PREVIOUS|- BRANCH CHECK_RUNS_JSON LOG_FILE
       prints the candidate's release notes; LOG_FILE holds one commit per line since PREVIOUS.
-      The log batch's image is named with DIGEST_PLACEHOLDER for its digest, which the
-      candidate workflow's tag job replaces with the digest its image job pushed or found
-      (ADR-042, ADR-080).
 """
 
 import json
@@ -46,12 +43,8 @@ import re
 import subprocess
 import sys
 
-import release
-
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-# Stands for the log batch image's digest in the notes, until the tag job writes it (ADR-042).
-DIGEST_PLACEHOLDER = "BATCH_IMAGE_DIGEST"
 TAG_RE = re.compile(r"^platform-(\d{4})\.(\d{2})\.(\d{2})(?:\.(\d+))?$")
 RC_RE = re.compile(r"^(platform-\d{4}\.\d{2}\.\d{2}(?:\.\d+)?)-rc\.(\d+)$")
 RC_BRANCH_RE = re.compile(r"^rc/(platform-\d{4}\.\d{2}\.\d{2}(?:\.\d+)?-rc\.\d+)$")
@@ -61,8 +54,9 @@ DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 # main's own run, the others the gates candidate.yml calls.
 GATE_CHECKS = ("static", "dry-run / dry-run", "smoke upgrade / smoke", "smoke fresh / smoke")
 # Check runs that are not the commit's CI: the jobs of candidate.yml and candidate-guard.yml,
-# from this run or an earlier candidate on the commit. The last three belong to workflows that
-# are gone (auto-candidate.yml, the cleanup job); a commit they ran on still carries them.
+# from this run or an earlier candidate on the commit. The image job and the last three belong
+# to workflows or jobs that are gone (the log batch's image, ADR-083; auto-candidate.yml; the
+# cleanup job); a commit they ran on still carries them.
 CANDIDATE_JOBS = frozenset([
     "check the candidate",
     "the log batch's image on GHCR",
@@ -205,7 +199,7 @@ def released(final, branches):
     return [b for b, f, _ in _rc_branches(branches) if _key(f) <= _key(final)]
 
 
-def notes(tag, commit, previous, branch, checks, log, pins, supported, batch_image):
+def notes(tag, commit, previous, branch, checks, log, pins, supported):
     image = pins["node_image"]["image"]
     kubernetes = image.split(":", 1)[1].split("@", 1)[0]
     chart = pins["cnpg_chart"]
@@ -228,7 +222,6 @@ def notes(tag, commit, previous, branch, checks, log, pins, supported, batch_ima
         "",
         "## Versions",
         "",
-        f"- The log batch's image: `{batch_image}@{DIGEST_PLACEHOLDER}` (ADR-042).",
         f"- Gate: kind on Kubernetes {kubernetes}, node image `{image}`.",
         f"- CloudNativePG on the gate: chart {chart['version']}, operator "
         f"{chart['operator_version']}. Operator versions this release supports: "
@@ -314,7 +307,7 @@ def _main(argv):
             log = f.read().splitlines()
         print(notes(tag, commit, None if prev == "-" else prev, branch, _load(checks_path), log,
                     _load(os.path.join(ROOT, "gates", "pins.json")),
-                    _load(os.path.join(HERE, "supported.json")), release.batch_image()),
+                    _load(os.path.join(HERE, "supported.json"))),
               end="")
         return 0
     print(__doc__.strip().splitlines()[0], file=sys.stderr)

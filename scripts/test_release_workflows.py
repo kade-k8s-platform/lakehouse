@@ -10,6 +10,8 @@ import unittest
 
 from test_gate_workflows import WORKFLOWS, read_workflow, workflows
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 GUARD = "candidate-guard.yml"
 
 
@@ -121,22 +123,10 @@ class Candidate(unittest.TestCase):
         self.assertEqual(self.jobs["smoke-upgrade"]["with"], {"fresh": "false"})
         self.assertEqual(self.jobs["smoke-fresh"]["with"], {"fresh": "true"})
 
-    def test_only_the_gates_image_and_tag_can_write(self):
+    def test_only_the_gates_and_tag_can_write(self):
         writers = {k for k, j in self.jobs.items()
                    if "write" in (j.get("permissions") or {}).values()}
-        self.assertEqual(writers, set(GATE_CALLS) | {"image", "tag"})
-
-    def test_the_image_follows_the_gates_and_is_the_only_job_with_packages(self):
-        gates = sorted(GATE_CALLS)
-        image = self.job_named("the log batch's image on GHCR")
-        self.assertEqual(sorted(image["needs"]), sorted(["check"] + gates))
-        self.assertEqual(image["permissions"], {"contents": "read", "packages": "write"})
-        self.assertEqual([k for k, j in self.jobs.items()
-                          if "packages" in (j.get("permissions") or {})], ["image"])
-        script = run_text(image)
-        for part in ("release.py batch-image", "imagetools inspect", "docker push",
-                     "DOCKER_CONFIG=$anonymous", "cannot be pulled without credentials"):
-            self.assertIn(part, script)
+        self.assertEqual(writers, set(GATE_CALLS) | {"tag"})
 
     def test_the_tag_job_runs_none_of_the_repositorys_code(self):
         tag = self.job_named("rc tag and prerelease")
@@ -144,22 +134,74 @@ class Candidate(unittest.TestCase):
         self.assertNotIn("actions/checkout", uses_text(tag))
         self.assertNotIn("python3", run_text(tag))
 
-    def test_the_tag_job_needs_the_check_the_notes_and_the_image(self):
+    def test_the_tag_job_needs_the_check_and_the_notes(self):
         tag = self.job_named("rc tag and prerelease")
         keys = {k for k, j in self.jobs.items() if j["name"] in ("check the candidate",
-                "notes of the candidate", "the log batch's image on GHCR")}
+                "notes of the candidate")}
         self.assertEqual(set(tag["needs"]), keys)
 
     def test_the_tag_job_tags_the_runs_commit_without_a_stamp(self):
         script = run_text(self.job_named("rc tag and prerelease"))
         for part in ('--target "$GITHUB_SHA"', "--prerelease", 'refs/heads/rc/$RC',
-                     "BATCH_IMAGE_DIGEST", "$SUPERSEDED"):
+                     "$SUPERSEDED"):
             self.assertIn(part, script)
         for part in ("git/commits", "git/trees", "git/blobs"):
             self.assertNotIn(part, script)
     def test_there_is_no_cleanup_job_any_more(self):
         self.assertNotIn("cleanup", self.jobs)
         self.assertNotIn("delete the candidate branch", {j.get("name") for j in self.jobs.values()})
+
+
+class BatchImageIsGone(unittest.TestCase):
+    """ADR-083: the log batch's chart, image and tests are deleted, and the release builds no
+    image."""
+
+    GONE = ("polaris-log-batch", "batch-image", "BATCH_IMAGE", "IMAGE_REGISTRY")
+
+    def test_the_chart_the_image_and_their_tests_are_deleted(self):
+        for path in (("charts", "polaris-log-batch"), ("images", "polaris-log-batch"),
+                     ("charts", "test_polaris_log_batch.py")):
+            with self.subTest(path=path):
+                self.assertFalse(os.path.exists(os.path.join(ROOT, *path)))
+
+    def test_no_workflow_template_or_runbook_names_it(self):
+        paths = [os.path.join(WORKFLOWS, n) for n in sorted(os.listdir(WORKFLOWS))
+                 if n.endswith(".yml")]
+        paths += [os.path.join(ROOT, ".env.template"),
+                  os.path.join(ROOT, "docs", "runbooks", "stress-capacity.md")]
+        for path in paths:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            for word in self.GONE:
+                with self.subTest(path=os.path.basename(path), word=word):
+                    self.assertNotIn(word, text)
+
+    def test_candidate_has_no_image_job_and_no_job_writes_packages(self):
+        jobs = read_workflow(os.path.join(WORKFLOWS, CANDIDATE))["jobs"]
+        self.assertEqual(set(jobs), {"check", "dry-run", "smoke-upgrade", "smoke-fresh",
+                                     "notes", "tag"})
+        for key, job in jobs.items():
+            with self.subTest(job=key):
+                self.assertNotIn("packages", job.get("permissions") or {})
+                for step in job.get("steps") or []:
+                    self.assertNotIn("docker", step.get("run", ""))
+                    self.assertNotIn("ghcr.io", step.get("run", ""))
+
+    def test_the_tag_job_needs_the_check_and_the_notes_and_swaps_nothing(self):
+        tag = read_workflow(os.path.join(WORKFLOWS, CANDIDATE))["jobs"]["tag"]
+        self.assertEqual(set(tag["needs"]), {"check", "notes"})
+        script = run_text(tag)
+        for word in ("IMAGE", "DIGEST", "grep -cF", "sed -i"):
+            self.assertNotIn(word, script)
+
+    def test_promote_names_neither_a_batch_nor_a_digest_and_writes_no_packages(self):
+        workflow = read_workflow(os.path.join(WORKFLOWS, "promote.yml"))
+        with open(os.path.join(WORKFLOWS, "promote.yml"), encoding="utf-8") as f:
+            text = f.read().lower()
+        self.assertNotIn("batch", text)
+        self.assertNotIn("digest", text)
+        for job in workflow["jobs"].values():
+            self.assertNotIn("packages", job.get("permissions") or {})
 
 
 class Promote(unittest.TestCase):

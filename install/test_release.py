@@ -1168,8 +1168,10 @@ class Steps(unittest.TestCase):
         for name in ("logs_claim", "logs_claim_manifest", "log_batch", "batch_values",
                      "POLARIS_LOGS"):
             self.assertFalse(hasattr(release, name), name)
-        for name in ("batch_image", "BATCH_CHART", "image_registry", "log_sidecar"):
-            self.assertTrue(hasattr(release, name), name)
+        for name in ("batch_image", "BATCH", "BATCH_CHART", "BATCH_IMAGE_DIR", "BATCH_IMAGE_FILES",
+                     "DEFAULT_IMAGE_REGISTRY", "image_registry"):
+            self.assertFalse(hasattr(release, name), name)
+        self.assertTrue(hasattr(release, "log_sidecar"))
 
     def test_no_step_applies_a_claim_or_the_batch(self):
         step0, pg, endpoints = FakeKubectl(), FakeCalls(), FakeRun()
@@ -1197,7 +1199,7 @@ class Steps(unittest.TestCase):
         self.assertEqual(problems, [])
         for argv in calls:
             for word in ("storageclass", "polaris-log-batch", "persistentvolumeclaim",
-                         release.BATCH_CHART):
+                         os.path.join(release.ROOT, "charts", "polaris-log-batch")):
                 self.assertNotIn(word, argv)
             self.assertNotIn("apply", argv)
 
@@ -2143,39 +2145,6 @@ class Console(unittest.TestCase):
         self.assertIn("timed out waiting", "\n".join(problems))
 
 
-MIRROR = "mirror.example.invalid:5000/platform"
-
-
-class BatchImage(unittest.TestCase):
-    """ADR-042: the release pushes the batch's image to GHCR; IMAGE_REGISTRY names a mirror.
-    ADR-074: under the repository's organization, kade-k8s-platform."""
-
-    def test_the_default_is_the_github_container_registry(self):
-        self.assertEqual(release.DEFAULT_IMAGE_REGISTRY, "ghcr.io/kade-k8s-platform/lakehouse")
-        self.assertTrue(release.batch_image().startswith(
-            "ghcr.io/kade-k8s-platform/lakehouse/polaris-log-batch:"))
-
-    def test_the_charts_default_repository_is_the_releases(self):
-        values = os.path.join(os.path.dirname(__file__), "..", "charts", "polaris-log-batch", "values.yaml")
-        with open(values, encoding="utf-8") as f:
-            repositories = [line.split(":", 1)[1].strip() for line in f
-                            if line.startswith("  repository:")]
-        self.assertEqual(repositories, [release.DEFAULT_IMAGE_REGISTRY + "/polaris-log-batch"])
-
-    def test_an_empty_or_missing_registry_is_the_default(self):
-        for env in ({}, {"IMAGE_REGISTRY": ""}):
-            with self.subTest(env=env):
-                self.assertEqual(release.image_registry(env), release.DEFAULT_IMAGE_REGISTRY)
-
-    def test_a_registry_in_env_is_used_without_a_trailing_slash(self):
-        self.assertEqual(release.image_registry({"IMAGE_REGISTRY": MIRROR}), MIRROR)
-        self.assertEqual(release.image_registry({"IMAGE_REGISTRY": MIRROR + "/"}), MIRROR)
-
-    def test_a_mirror_keeps_the_name_and_the_tag(self):
-        default, mirrored = release.batch_image(), release.batch_image(registry=MIRROR)
-        self.assertEqual(mirrored, f"{MIRROR}/polaris-log-batch:{default.rsplit(':', 1)[1]}")
-
-
 class Cors(unittest.TestCase):
     def test_polaris_allows_the_consoles_origin_only_while_it_is_enabled(self):
         enabled = release.polaris_values({**BOOTSTRAP_ENV, **CONSOLE_ENV})
@@ -2213,12 +2182,17 @@ class Main(unittest.TestCase):
         self.assertIn("KUBE_CONTEXT", result.stdout + result.stderr)
 
 
-    def test_batch_image_prints_the_image_the_release_pushes_whatever_env_says(self):
+    def test_batch_image_is_an_unknown_option_and_the_usage_line_has_no_batch(self):
         result = subprocess.run([sys.executable, release.__file__, "batch-image"],
-                                capture_output=True, text=True, check=False,
-                                env={"PATH": os.environ.get("PATH", ""),
-                                     "IMAGE_REGISTRY": MIRROR})
-        self.assertEqual((result.returncode, result.stdout), (0, release.batch_image() + "\n"))
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Usage: python3 install/release.py [--dry-run]\n",
+                      result.stdout + result.stderr)
+        self.assertNotIn("batch", result.stdout + result.stderr)
+
+    def test_the_env_template_has_no_image_registry(self):
+        with open(os.path.join(release.ROOT, ".env.template"), encoding="utf-8") as f:
+            self.assertNotIn("IMAGE_REGISTRY", f.read())
 
     def test_an_unknown_option_exits_2(self):
         result = subprocess.run([sys.executable, release.__file__, "--upgrade"],

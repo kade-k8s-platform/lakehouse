@@ -297,7 +297,7 @@ class RebuildReplica(unittest.TestCase):
 class DatahubRecovery(unittest.TestCase):
     """check-datahub-recovery runs in a smoke job of its own, on its own kind cluster, after
     check-datahub, on every smoke run (ADR-075), over Datahub installed alone, fresh, after
-    smoke's set-up without the console's and the batch's images (ADR-077)."""
+    smoke's set-up without the console's image (ADR-077)."""
 
     def setUp(self):
         self.jobs = read_workflow(os.path.join(WORKFLOWS, "smoke.yml"))["jobs"]
@@ -364,11 +364,10 @@ class DatahubRecovery(unittest.TestCase):
                           'python3 gates/gate.py install --datahub-only | tee -a '
                           '"$GITHUB_STEP_SUMMARY"'])
 
-    def test_smoke_keeps_the_upgrade_the_seed_and_both_images(self):
+    def test_smoke_keeps_the_upgrade_the_seed_and_the_console_image(self):
         runs = "\n".join(s.get("run", "") for s in self.smoke["steps"])
         for want in ("python3 gates/gate.py install --fresh |", "python3 gates/gate.py install |",
-                     "python3 gates/gate.py check-migration |", "console-image --load",
-                     "python3 gates/gate.py batch-image"):
+                     "python3 gates/gate.py check-migration |", "console-image --load"):
             with self.subTest(want=want):
                 self.assertIn(want, runs)
         self.assertNotIn("--datahub-only", runs)
@@ -472,7 +471,7 @@ class Stress(unittest.TestCase):
 
     def test_the_steps_build_the_gate_in_direct_mode_then_seed_ramp_hold_verify_report(self):
         runs = [s.get("run", "") for s in self.job["steps"]]
-        order = ["gate.py up", "gate.py secrets --direct", "gate.py batch-image",
+        order = ["gate.py up", "gate.py secrets --direct",
                  "gate.py standins --direct", "gate.py install --fresh",
                  "stress/driver.py seed", "stress/driver.py ramp", "stress/driver.py hold",
                  "stress/driver.py verify", "stress/driver.py report"]
@@ -491,6 +490,52 @@ class Stress(unittest.TestCase):
                      if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
         self.assertEqual(upload["if"], "${{ !cancelled() }}")
         self.assertEqual(upload["with"]["name"], "stress")
+
+
+class PlainScalars(unittest.TestCase):
+    """The reader above is lenient; GitHub's YAML is not. An unquoted `name:` value with `: `
+    or ` #` in it makes GitHub reject the whole workflow (a run with no jobs)."""
+
+    def test_no_unquoted_step_or_job_name_holds_a_colon_space_or_a_comment_mark(self):
+        for name in sorted(os.listdir(WORKFLOWS)):
+            if not name.endswith(".yml"):
+                continue
+            with open(os.path.join(WORKFLOWS, name), encoding="utf-8") as f:
+                for number, line in enumerate(f, 1):
+                    m = re.match(r"^\s*(?:- )?name:\s+(\S.*)$", line.rstrip("\n"))
+                    if not m or m.group(1)[0] in "\"'|>[{&*!":
+                        continue
+                    with self.subTest(file=name, line=number):
+                        self.assertNotIn(": ", m.group(1))
+                        self.assertNotIn(" #", m.group(1))
+
+
+class BatchImageStepIsGone(unittest.TestCase):
+    """The batch's image step and diagnostics are gone from smoke and stress (ADR-083)."""
+
+    def runs(self, name):
+        jobs = read_workflow(os.path.join(WORKFLOWS, name))["jobs"]
+        return [s for j in jobs.values() for s in j.get("steps") or []]
+
+    def test_smoke_and_stress_build_no_batch_image(self):
+        for name in ("smoke.yml", "stress.yml"):
+            for step in self.runs(name):
+                with self.subTest(name=name, step=step.get("name")):
+                    self.assertNotIn("batch-image", step.get("run", ""))
+
+    def test_smokes_diagnostics_read_the_standin_by_its_name_and_not_the_batch(self):
+        (diag,) = [s for s in self.runs("smoke.yml")
+                   if s.get("if") == "failure()" and "NS_CATALOG_POLARIS" in s.get("run", "")]
+        text = diag["run"]
+        self.assertNotIn("polaris-log-batch", text)
+        self.assertNotIn("app.kubernetes.io/name=fluent-bit-standin", text)
+        self.assertIn('-n "$NS_STANDINS" logs deployment/main-fluent-bit-standin', text)
+
+    def test_the_check_logs_step_names_the_sidecar_adrs(self):
+        (step,) = [s for s in self.runs("smoke.yml")
+                   if "gates/gate.py check-logs" in s.get("run", "")]
+        self.assertIn("ADR-081", step["name"])
+        self.assertNotIn("ADR-036", step["name"])
 
 
 class DeleteWorkflow(unittest.TestCase):

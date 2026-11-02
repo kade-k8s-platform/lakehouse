@@ -1,6 +1,7 @@
 """Tests for release_tag.py. Run: python3 -m unittest discover -s install"""
 
 import contextlib
+import inspect
 import io
 import json
 import os
@@ -9,7 +10,6 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
-import release  # noqa: E402
 import release_tag as rt  # noqa: E402
 
 PINS = {
@@ -17,7 +17,6 @@ PINS = {
     "cnpg_chart": {"version": "0.29.1", "operator_version": "1.30.1"},
 }
 SUPPORTED = {"cnpg_operator": ["1.30"]}
-BATCH_IMAGE = "ghcr.io/o/r/polaris-log-batch:0123456789ab"
 
 
 def check(name, conclusion="success", status="completed", url=None):
@@ -136,6 +135,12 @@ class ChecksPassed(unittest.TestCase):
                               "candidate branch unchanged", "delete the candidate branch",
                               "rc tag and prerelease"}, set(rt.CANDIDATE_JOBS))
 
+    def test_the_retired_image_job_of_an_earlier_candidate_run_is_still_left_out(self):
+        # A commit an earlier Candidate ran on still carries that check run.
+        self.assertIn("the log batch's image on GHCR", rt.CANDIDATE_JOBS)
+        rt.checks_passed(self.runs() + [self.run_of("the log batch's image on GHCR", "failure",
+                                                    run="7")], "99")
+
     def test_the_gates_called_by_an_earlier_candidate_run_are_left_out(self):
         runs = self.runs() + [self.run_of(n, "failure", run="7") for n in
                               ("dry-run / dry-run", "smoke upgrade / smoke",
@@ -216,7 +221,7 @@ class Notes(unittest.TestCase):
         return rt.notes(tag="platform-2026.10.10-rc.1", commit="c" * 40, previous=previous,
                         branch="main", checks=all_green(),
                         log=["abc1234 A change", "def5678 Another"], pins=PINS,
-                        supported=SUPPORTED, batch_image=BATCH_IMAGE)
+                        supported=SUPPORTED)
 
     def test_names_the_tag_commit_and_branch(self):
         text = self.notes()
@@ -245,11 +250,12 @@ class Notes(unittest.TestCase):
         self.assertIn("since platform-2026.10.09", text)
         self.assertIn("- abc1234 A change", text)
 
-    def test_names_the_batch_image_with_a_digest_the_tag_job_fills_in(self):
+    def test_names_no_batch_image_and_has_no_digest_placeholder(self):
         text = self.notes()
-        self.assertIn(f"`{BATCH_IMAGE}@{rt.DIGEST_PLACEHOLDER}`", text)
-        self.assertEqual(text.count(rt.DIGEST_PLACEHOLDER), 1)
-        self.assertNotIn("none in this release", text)
+        self.assertNotIn("polaris-log-batch", text)
+        self.assertNotIn("BATCH_IMAGE_DIGEST", text)
+        self.assertFalse(hasattr(rt, "DIGEST_PLACEHOLDER"))
+        self.assertNotIn("batch_image", inspect.signature(rt.notes).parameters)
 
     def test_the_first_release_says_so(self):
         self.assertIn("First release: nothing to upgrade from.", self.notes(previous=None))
@@ -359,7 +365,7 @@ class Main(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("node image `kindest/node:v1.36.4@sha256:", out)
         self.assertIn("First release", out)
-        self.assertIn(f"`{release.batch_image()}@{rt.DIGEST_PLACEHOLDER}`", out)
+        self.assertNotIn("polaris-log-batch", out)
 
     def test_check_main_prints_nothing_on_main_and_exits_1_elsewhere(self):
         self.assertEqual(self.run_main(["check-main", "refs/heads/main"]), (0, ""))
