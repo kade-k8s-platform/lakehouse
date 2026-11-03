@@ -1,6 +1,6 @@
 # ADR-083: The log batch, its fixture and log-batch gates and its image are retired, and the install order loses the claim and the batch
 
-- **Status:** Accepted
+- **Status:** Amended by ADR-084
 - **Date:** 2026-11-02
 - **Related:** ADR-000, ADR-036, ADR-037, ADR-039, ADR-040, ADR-041, ADR-042, ADR-045, ADR-050, ADR-074, ADR-077, ADR-080, ADR-081, ADR-082
 

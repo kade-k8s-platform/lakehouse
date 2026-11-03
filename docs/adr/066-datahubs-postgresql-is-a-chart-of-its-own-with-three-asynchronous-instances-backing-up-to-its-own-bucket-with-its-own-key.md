@@ -1,6 +1,6 @@
 # ADR-066: Datahub's PostgreSQL is a chart of its own, with three asynchronous instances, backing up to its own bucket with its own key
 
-- **Status:** Accepted
+- **Status:** Amended by ADR-084
 - **Date:** 2026-10-18
 - **Related:** ADR-006, ADR-008, ADR-010, ADR-025, ADR-039, ADR-043, ADR-045, ADR-047, ADR-048, ADR-050, ADR-056, ADR-058, ADR-059, ADR-060
 

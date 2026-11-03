@@ -1,6 +1,6 @@
 # ADR-045: The CNPG operator and its backup plugin are the operator team's; a release installs in a fixed order
 
-- **Status:** Amended by ADR-077
+- **Status:** Superseded by ADR-084
 - **Date:** 2026-10-13
 - **Related:** ADR-000, ADR-004, ADR-007, ADR-010, ADR-012, ADR-017, ADR-018, ADR-026, ADR-028, ADR-029, ADR-031, ADR-036, ADR-037, ADR-043, ADR-044
 

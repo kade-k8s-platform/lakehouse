@@ -1,6 +1,6 @@
 # ADR-076: Datahub ingests each Polaris catalog daily from upstream's ingestion CronJob, as its own principal the policy lets only read
 
-- **Status:** Accepted
+- **Status:** Amended by ADR-084
 - **Date:** 2026-10-18
 - **Related:** ADR-004, ADR-006, ADR-009, ADR-016, ADR-025, ADR-026, ADR-031, ADR-034, ADR-039, ADR-045, ADR-048, ADR-050, ADR-051, ADR-053, ADR-059, ADR-071, ADR-072, ADR-074, ADR-075
 

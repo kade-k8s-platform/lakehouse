@@ -112,7 +112,7 @@ python3 gates/gate.py install --fresh
   directly and never through the recorder. It refuses an existing `.env`.
 - `standins --direct` takes OPA's and SeaweedFS's CPU limits from the overlay.
 - `install --fresh` applies the gate's allow policies, then installs this commit as a
-  release (ADR-045, ADR-048).
+  release (ADR-045, ADR-084, ADR-048).
 
 ## 2. Check the context and the stand-ins' limits
 
