@@ -1,20 +1,9 @@
 # The gate cluster (ADR-017): one control-plane and two workers. The node image is pinned in
 # gates/pins.json and passed with --image. `gate.py up` removes the control-plane's NoSchedule
 # taint, so all three nodes take pods and three PostgreSQL instances run on three nodes.
-# Every node mounts the same runner directory, which `gate.py up` offers as the
-# ReadWriteMany class `shared` for the log claim (ADR-036).
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
-    extraMounts:
-      - hostPath: /tmp/lakehouse-gate-shared
-        containerPath: /var/local-path-shared
   - role: worker
-    extraMounts:
-      - hostPath: /tmp/lakehouse-gate-shared
-        containerPath: /var/local-path-shared
   - role: worker
-    extraMounts:
-      - hostPath: /tmp/lakehouse-gate-shared
-        containerPath: /var/local-path-shared

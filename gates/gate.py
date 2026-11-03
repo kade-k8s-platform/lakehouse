@@ -11,9 +11,7 @@
                   only because the gate has no operator team (ADR-029); a release never
                   installs it. After it, cert-manager and the Barman Cloud Plugin from their
                   pinned release manifests, the plugin in NS_CNPG_SYSTEM, each waited for
-                  (ADR-043). Before CNPG, kind's local-path-provisioner gets the class
-                  `shared` on a runner directory every node mounts: ReadWriteMany for the
-                  log claim (ADR-036).
+                  (ADR-043).
   secrets [--direct]
                   writes `.env` for the gate (its context, the stand-ins' endpoints and
                   the S3 stand-in's four keys, Polaris's, the smoke tests' and each
@@ -300,20 +298,6 @@ CHECK_POD_LABEL = f"--labels={network.CHECK_LABEL}=true"
 ICEBERG_CATALOG = "gate_catalog"
 # The catalog Datahub ingests on the gate (ADR-076 §6), named in the gate's .env.
 INGEST_CATALOG = "gate_ingest_catalog"
-# ReadWriteMany on kind for the log claim (ADR-036): one runner directory mounted into every
-# node (gates/kind.yaml), offered by kind's local-path-provisioner as the class `shared`
-# through its sharedFileSystemPath. A stand-in, never released (ADR-031).
-SHARED_HOST_DIR = "/tmp/lakehouse-gate-shared"
-SHARED_NODE_DIR = "/var/local-path-shared"
-SHARED_CLASS = "shared"
-GATE_LOGS_SIZE = "1Gi"
-# kind's own default, which the class `standard` keeps.
-STANDARD_NODE_PATHS = [{"node": "DEFAULT_PATH_FOR_NON_LISTED_NODES",
-                        "paths": ["/var/local-path-provisioner"]}]
-# What the last release's release.py reads from .env for the claim polaris-logs, which the
-# template no longer holds: the upgrade job runs that script over the gate's .env first.
-# L7g removes it with the shared class once no release that needs it is the upgrade's base.
-LEGACY_ENV = {"POLARIS_LOGS_STORAGE_CLASS": SHARED_CLASS, "POLARIS_LOGS_SIZE": GATE_LOGS_SIZE}
 # The Polaris console's image, built here from a pinned polaris-tools commit (ADR-028).
 CONSOLE_IMAGE_DIR = os.path.join(ROOT, "images", "polaris-console")
 CONSOLE_IMAGE_REPOSITORY = "lakehouse/polaris-console"
@@ -358,12 +342,6 @@ def tools(pins, bin_dir, names=TOOLS, get=download):
         os.chmod(path, 0o755)
 
 
-def shared_storage_class():
-    return {"apiVersion": "storage.k8s.io/v1", "kind": "StorageClass",
-            "metadata": {"name": SHARED_CLASS}, "provisioner": "rancher.io/local-path",
-            "reclaimPolicy": "Delete", "volumeBindingMode": "WaitForFirstConsumer"}
-
-
 def plugin_manifest(text, namespace):
     """The plugin's release manifest, refused unless every namespace it names is `namespace`:
     it names its own, and the plugin must run in the operator's (ADR-043 §3)."""
@@ -379,13 +357,8 @@ def plugin_manifest(text, namespace):
 
 def up_commands(pins, chart_path, namespace, manifests, kind_config=KIND_CONFIG):
     """(argv, stdin) in order: the cluster from `kind_config`, the control-plane taken off
-    NoSchedule, the shared class next to kind's `standard` (the provisioner restarted to read
-    it), CNPG, then cert-manager and the plugin from `manifests` (name to text), each waited
-    for."""
-    config = {"nodePathMap": [],
-              "storageClassConfigs": {"standard": {"nodePathMap": STANDARD_NODE_PATHS},
-                                      SHARED_CLASS: {"sharedFileSystemPath": SHARED_NODE_DIR}}}
-    provisioner = ["kubectl", "--context", CONTEXT, "-n", "local-path-storage"]
+    NoSchedule, CNPG, then cert-manager and the plugin from `manifests` (name to text), each
+    waited for."""
     # Server-side: cert-manager's CRDs are too large for the last-applied annotation.
     apply = ["kubectl", "--context", CONTEXT, "apply", "--server-side", "--field-manager=gate",
              "-f", "-"]
@@ -395,13 +368,6 @@ def up_commands(pins, chart_path, namespace, manifests, kind_config=KIND_CONFIG)
           "--image", pins["node_image"]["image"], "--wait", "180s"], None),
         (["kubectl", "--context", CONTEXT, "taint", "nodes", f"{CLUSTER}-control-plane",
           "node-role.kubernetes.io/control-plane:NoSchedule-"], None),
-        (provisioner + ["patch", "configmap", "local-path-config", "--type", "merge", "-p",
-                        json.dumps({"data": {"config.json": json.dumps(config)}})], None),
-        (["kubectl", "--context", CONTEXT, "apply", "-f", "-"],
-         json.dumps(shared_storage_class())),
-        (provisioner + ["rollout", "restart", "deployment/local-path-provisioner"], None),
-        (provisioner + ["rollout", "status", "deployment/local-path-provisioner",
-                        "--timeout=3m"], None),
         (["helm", "--kube-context", CONTEXT, "install", "cnpg", chart_path,
           "--namespace", namespace, "--create-namespace", "--wait", "--timeout", "5m"], None),
         (apply, manifests["cert_manager"]),
@@ -494,13 +460,12 @@ def console_settings(ns):
 
 def gate_env(template_text, gen=init_env.generate, direct=False):
     """`.env` for the gate: its context, the stand-ins' endpoints (`direct`: see
-    standin_endpoints), the S3 stand-in's credentials, the console's settings, the last
-    release's claim variables (LEGACY_ENV), the sidecar's destination (ADR-081) and a namespace label per caller class
-    (ADR-048 §6); init_env fills the rest."""
+    standin_endpoints), the S3 stand-in's credentials, the console's settings, the sidecar's
+    destination (ADR-081) and a namespace label per caller class (ADR-048 §6); init_env fills
+    the rest."""
     template = init_env.parse(template_text)
     fixed = {"KUBE_CONTEXT": CONTEXT, **standin_endpoints(template["NS_STANDINS"], direct),
              **console_settings(template["NS_CATALOG_POLARIS"]),
-             **LEGACY_ENV,
              "DATAHUB_INGEST_POLARIS_CATALOGS": INGEST_CATALOG,
              **network.GATE_CALLER_LABELS}
     lines = []
@@ -511,7 +476,6 @@ def gate_env(template_text, gen=init_env.generate, direct=False):
         elif name in GATE_ENV_GENERATED:
             line = f"{name}={gen(name)}"
         lines.append(line)
-    lines += [f"{name}={value}" for name, value in LEGACY_ENV.items() if name not in template]
     return "\n".join(lines) + "\n"
 
 
@@ -819,18 +783,15 @@ def command_label(command):
 # end, so their events are what is left of them; the Cluster's say what CNPG is doing.
 TIMELINE_EVENT_KINDS = ("Job", "Cluster")
 # And between polaris-pg's Ready and Polaris's revision: release.py's endpoint check and
-# bootstrap run in pods it names with these prefixes and deletes (--rm), then it makes the
-# log claim (install/release.py, the last release's too).
+# bootstrap run in pods it names with these prefixes and deletes (--rm).
 TIMELINE_POD_PREFIXES = ("endpoint-check-", "polaris-bootstrap-")
-TIMELINE_CLAIMS = ("polaris-logs",)
 
 
 def timeline_event(obj):
     """Whether an event about `obj` (its involvedObject) goes on the timeline."""
     kind, name = obj.get("kind"), obj.get("name") or ""
     return (kind in TIMELINE_EVENT_KINDS
-            or kind == "Pod" and name.startswith(TIMELINE_POD_PREFIXES)
-            or kind == "PersistentVolumeClaim" and name in TIMELINE_CLAIMS)
+            or kind == "Pod" and name.startswith(TIMELINE_POD_PREFIXES))
 
 
 def timeline_entries(since, histories, jobs, deployments, clusters, commands, events=None):
@@ -2581,8 +2542,6 @@ def up(pins, kind_config=KIND_CONFIG):
         manifests = {name: fetch(pin["url"], pin["sha256"]).decode("utf-8")
                      for name, pin in pins["manifests"].items()}
         plugin_manifest(manifests["barman_cloud_plugin"], namespace)
-        os.makedirs(SHARED_HOST_DIR, exist_ok=True)
-        os.chmod(SHARED_HOST_DIR, 0o777)
         for command, stdin in up_commands(pins, chart_path, namespace, manifests,
                                           kind_config):
             run(command, stdin)

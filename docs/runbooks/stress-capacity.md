@@ -108,11 +108,6 @@ python3 gates/gate.py standins --direct
 python3 gates/gate.py install --fresh
 ```
 
-- **After a reboot of the server, `up` can fail** with `PermissionError` on
-  `/tmp/lakehouse-gate-shared`. The old cluster's nodes restart with Docker, and Docker makes
-  their missing bind-mount directory again, owned by root. Once `kind delete cluster` has run,
-  nothing uses it: remove it with `sudo rm -rf /tmp/lakehouse-gate-shared`, then run `up`
-  and the rest again.
 - `secrets --direct` writes this worktree's `.env`, with Polaris pointed at the stand-ins
   directly and never through the recorder. It refuses an existing `.env`.
 - `standins --direct` takes OPA's and SeaweedFS's CPU limits from the overlay.
