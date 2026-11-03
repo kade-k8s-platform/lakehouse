@@ -14,7 +14,7 @@ the second column belong to other teams. Here they are only interfaces, configur
 |---|---|
 | **Apache Polaris** (ADR-009), with its own PostgreSQL on CloudNativePG (ADR-008, ADR-010) | **Object storage**, S3-compatible: the Iceberg warehouse and backups |
 | **Polaris console** (`apache/polaris-tools` `console/`) | **Observability**: Fluent Bit, OpenSearch, Prometheus, Grafana |
-| **The Polaris log batch** (ADR-014) and **log sidecar** (ADR-081, ADR-082): processed log files ready for Fluent Bit, and the kept lines forwarded to it | **ETL**: Spark, Flink, the shared Kafka |
+| **The Polaris log sidecar** (ADR-081, ADR-082): Polaris's kept log lines, filtered and forwarded to Fluent Bit | **ETL**: Spark, Flink, the shared Kafka |
 | **Datahub**, with PostgreSQL on CNPG, a single-broker Kafka and a small OpenSearch, used by Datahub only (ADR-025) | **Query clients**: Trino, Iceberg clients, per-user StarRocks |
 | | **SSO**: Keycloak |
 | | **The catalog gateway**: Polaris's authorizer and wrapper API, built elsewhere |
@@ -34,10 +34,8 @@ flowchart LR
     EXT["external services"] --> GW
     POL --> PG[("PostgreSQL<br/>CNPG")]
     POL -->|"warehouse"| S3[("object storage")]
-    POL -.->|"original logs"| LB["log batch"]
-    LB -.->|"processed files"| FB["Fluent Bit"] --> OS[("OpenSearch")]
     POL -.->|"syslog"| SC["log sidecar<br/>(filters)"]
-    SC -.->|"kept lines"| FB
+    SC -.->|"kept lines"| FB["Fluent Bit"] --> OS[("OpenSearch")]
     DH["Datahub"] -->|"ingests metadata"| POL
     DH --> DPG[("PostgreSQL<br/>CNPG")]
     DH --> DK[("Kafka")]
@@ -71,17 +69,18 @@ source does not matter for operation. What follows is the list they cover.
   - Object storage becomes an external S3 endpoint, with SeaweedFS only as the gate's
     stand-in (ADR-031).
   - The install order without storage and monitoring (restated in full by ADR-045).
-  - Fluent Bit and OpenSearch belong to the observability team; this repository delivers the
-    log files ADR-014 describes, in a documented format (ADR-081).
-  - ADR-014: its open question (sharing the log volume across nodes) is answered before the
-    batch is built.
+  - Fluent Bit and OpenSearch belong to the observability team; this repository delivers
+    Polaris's kept log lines to Fluent Bit through a sidecar, in a documented format
+    (ADR-081, ADR-082).
+  - ADR-014: its open question (sharing the log volume across nodes) lapsed with the volume:
+    Polaris writes no log file (ADR-081, ADR-083).
   - ADR-017: the gate installs stand-ins (SeaweedFS, Fluent Bit) that are never released
     (ADR-031).
   - ADR-006: `init_env.py` drops the `minio-root` and `opensearch-admin` Secrets and gains
     Datahub's.
 - **New ADRs:**
   - Datahub and its PostgreSQL, Kafka and OpenSearch;
-  - the contract with other teams' services (S3, metrics, log files, SSO);
+  - the contract with other teams' services (S3, metrics, logs, SSO);
   - Polaris authentication and principal provisioning, as above;
   - network policies: which callers may reach which port;
   - the Polaris console: chart, and image source.
