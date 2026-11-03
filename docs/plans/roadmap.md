@@ -196,36 +196,31 @@ source does not matter for operation. What follows is the list they cover.
   [38133756150](https://github.com/enjay27/lakehouse/actions/runs/38133756150) (the image
   built and loaded; the 10 sign-in checks ok; console.json's 3 expectations and the other 32
   ok). Open: how the image reaches a target cluster (ADR-028).
-- The log batch (2026-10-11, ADR-014, ADR-024, ADR-036, ADR-081, ADR-037, ADR-083, #45). Polaris writes one
-  JSON file per pod to the `ReadWriteMany` claim `polaris-logs`, which `release.py` step 1
-  creates before Polaris; step 2 installs the batch's CronJob before the console, and its
-  failure stops the install. Smoke [38143901431](https://github.com/enjay27/lakehouse/actions/runs/38143901431)
-  and dry-run [38143901179](https://github.com/enjay27/lakehouse/actions/runs/38143901179)
-  passed on `976eeb4` (#51). Its output is contract v2 (`docs/contracts/polaris-logs.md`):
-  the archive's audit policy keeps refusals, errors and changes and counts the rest in
-  resource, principal and app_dropped rows; its kept lines and counters match the Fluent Bit
-  Lua filter it came from (the archive's step16, six seeds, 2026-10-11). The smoke gate's
-  `check-logs` sends each Polaris pod reads with root's token and requests without one, runs
-  the batch twice with its clock past that hour, and a stand-in Fluent Bit 5.1.2 reads the
-  output from the claim, read-only: every line and row holds contract v2, every summary's
-  books balance, each refused request is kept once from its pod, no read is kept but the rows
-  count them, both pods' files are read, and the second run changes nothing.
-  The release flow pushes the batch's image to GHCR under its content-hash tag, and a
-  cluster pulls it from `IMAGE_REGISTRY` or GHCR (ADR-080, #55); `platform-2026.10.12`,
-  the first release with Polaris, pushed it (#78). ADR-081 replaces this path with the log
-  sidecar below; the batch, its claim and check-logs stay until the cutover removes them.
-- The log sidecar (2026-10-30 to 2026-10-31, ADR-081, ADR-082). Polaris sends its logs over
-  syslog on localhost to a Fluent Bit native sidecar (no file, no claim) that keeps refusals,
-  errors and changes by twelve routing rows of built-in filters and forwards them to the
-  observability team's main Fluent Bit, into a three-day candidate index that an OpenSearch
-  transform aggregates (contract v3, docs/contracts/polaris-logs.md; #241, #247).
-  charts/polaris-log-sidecar is the ConfigMap and the values that add the sidecar to Polaris
-  (#242, #246); release.py installs it in step 1 after the claim and before Polaris, and a
-  failure stops the install (#248). On the gate, check-logs also runs Polaris 1.6.0's syslog
-  proofs (#243) and the sidecar smoke step, syslog frames through the rendered filters and
-  Polaris's handler reconnecting after a sidecar restart (#246). The sidecar's output host and
-  port are POLARIS_LOG_OUTPUT_HOST and POLARIS_LOG_OUTPUT_PORT, empty placeholders until the
-  observability team gives them. Both paths run side by side until the old one is removed.
+- The log batch (2026-10-11 to 2026-11-03, ADR-014, ADR-024, ADR-036, ADR-081, ADR-037, ADR-083, #45), removed.
+  Polaris wrote one JSON file per pod to a ReadWriteMany claim; a CronJob installed in step 2 turned
+  each UTC hour of them into contract v2 rows for Fluent Bit, and a log-batch gate with a real-hour
+  fixture proved it (#51), with its image on GHCR (#55, #78). ADR-083 retired it once the sidecar
+  below carried the logs: gate-check stopped asking for the log-batch gate (#252); the gate, its
+  fixtures and their workflows went (#253); check-logs kept only the sidecar chain and contract v2
+  went (#254); the install lost the claim and the batch step (#255); the chart, the image and every
+  use of it in the release pipeline went (#258); the gate's shared storage class and the last
+  release's claim variables went (#260). A release cut before still pulls its own batch image, and a
+  cluster that ran one keeps the claim and the batch's CronJob until both are removed by hand (the
+  upgrade note in install/release.py).
+- The log sidecar (2026-10-30 to 2026-10-31, ADR-081, ADR-082). Polaris sends its logs over syslog
+  on localhost to a Fluent Bit native sidecar (no file, no claim) that keeps refusals, errors and
+  changes by twelve routing rows of built-in filters and forwards them to the observability team's
+  main Fluent Bit, into a three-day candidate index that an OpenSearch transform aggregates
+  (contract v3, docs/contracts/polaris-logs.md; #241, #247). charts/polaris-log-sidecar is the
+  ConfigMap and the values that add the sidecar to Polaris (#242, #246); release.py installs it in
+  step 1 before Polaris, and a failure, or an empty POLARIS_LOG_OUTPUT_HOST, stops the install
+  (#248, #255). On the gate, check-logs runs Polaris 1.6.0's syslog proofs (#243), then the
+  sidecar smoke step, syslog frames through the rendered filters and Polaris's handler
+  reconnecting after a sidecar restart (#246). The gate's main Fluent Bit is
+  main-fluent-bit-standin, a stand-in that only Polaris's pods may reach (#251). The sidecar's
+  output host and port are POLARIS_LOG_OUTPUT_HOST and POLARIS_LOG_OUTPUT_PORT, empty placeholders
+  until the observability team gives them. It is the only log path: the batch that ran beside it
+  is removed (above).
 - Backups (2026-10-12, ADR-043, #83). polaris-pg archives its WAL and takes a daily base
   backup through the Barman Cloud Plugin into `POLARIS_BACKUP_BUCKET`, with its own key in
   `polaris-backup-s3`; step 0 requires the plugin and its `ObjectStore` CRD. The gate
