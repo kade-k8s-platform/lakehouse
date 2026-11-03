@@ -413,6 +413,7 @@ when Kade learns the target clusters' version.
 | PostgreSQL for Datahub | 16 | same as Polaris; target unknown |
 | Kafka (`apache/kafka`) | 4.3.1 | latest stable; target unknown |
 | OpenSearch (Datahub) | 2.19.6 | latest 2.x, the line Datahub's chart uses; target unknown |
+| Fluent Bit (the log sidecar; the gate's stand-ins) | 5.1.4, by digest in `charts/polaris-log-sidecar` | newest at least two weeks old; the syslog input's octet-counting fixes are in 5.1.3 and later (ADR-081) |
 | CPU architecture | `x86_64` | assumed (ADR-017); open |
 
 ## Risks to verify
